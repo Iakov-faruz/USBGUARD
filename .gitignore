@@ -1,0 +1,41 @@
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environments
+venv/
+env/
+.venv/
+
+# Flask instance folder
+instance/
+
+# Python build artifacts
+*.egg-info/
+*.dist-info/
+build/
+dist/
+
+# Pip / site-packages (inside venv)
+site-packages/
+
+# Logs
+*.log
+log/
+logs/
+
+# System files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# IDE
+.vscode/
+.idea/
+
+# Backup files
+*.bak
+*.swp
+*.tmp

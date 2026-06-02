@@ -1,0 +1,11 @@
+# USBGuard System Rules – Valid syntax for v1.1.2
+# מאפשר בקרי USB, Tablet, וממשקי HID למניעת Lockout
+
+allow id 1d6b:0001 with-interface 09:00:00
+allow id 1d6b:0002 with-interface 09:00:00
+allow id 1d6b:0003 with-interface 09:00:00
+allow id 80ee:0021
+allow with-interface 03:00:00
+allow with-interface 03:01:00
+allow with-interface 03:01:01
+allow with-interface 03:01:02

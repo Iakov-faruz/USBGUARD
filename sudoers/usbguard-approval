@@ -1,0 +1,5 @@
+Cmnd_Alias USBGUARD_APPROVE=/etc/usbguard/scripts/usb-approve.sh
+Cmnd_Alias USBGUARD_BACKUP=/etc/usbguard/scripts/backup-rules.sh
+Cmnd_Alias USBGUARD_RESTORE=/etc/usbguard/scripts/restore-rules.sh
+
+%usbadmins ALL=(root) NOPASSWD: USBGUARD_APPROVE, USBGUARD_BACKUP, USBGUARD_RESTORE

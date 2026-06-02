@@ -1,0 +1,12 @@
+[Unit]
+Description=Run USBGuard TTL Reaper every 5 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+Persistent=true
+AccuracySec=1s
+RandomizedDelaySec=30s
+
+[Install]
+WantedBy=timers.target

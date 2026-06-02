@@ -1,0 +1,17 @@
+[Unit]
+Description=USBGuard TTL Reaper - Cleanup Expired Temporary Rules
+After=time-sync.target usbguard.service
+Wants=time-sync.target
+Documentation=man:usbguard(8)
+
+[Service]
+Type=oneshot
+ExecStart=/etc/usbguard/scripts/cleanup-expired.sh
+User=root
+Group=root
+Nice=10
+IOSchedulingClass=idle
+ProtectSystem=strict
+ReadWritePaths=/etc/usbguard /var/lib/usbguard-manager /var/log /var/lock
+PrivateTmp=true
+NoNewPrivileges=false

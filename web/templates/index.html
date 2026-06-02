@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>USBGuard Shield Manager</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+
+    <!-- Main Header -->
+    <header class="glass-panel">
+        <div class="logo-container">
+            <i class="fa-solid fa-shield-halved logo-icon"></i>
+            <div>
+                <h1>USBGuard Shield Manager</h1>
+                <div style="font-size: 0.75rem; color: var(--text-secondary); margin-top: 0.1rem;">Enterprise USB Shielding Console v2.2</div>
+            </div>
+        </div>
+        <div class="header-controls">
+            <div id="reaper-badge" class="status-badge">
+                <i class="fa-regular fa-clock"></i> Reaper: Loading
+            </div>
+            <div id="daemon-badge" class="status-badge">
+                <i class="fa-solid fa-power-off"></i> Daemon: Loading
+            </div>
+            <button class="btn-refresh" onclick="reloadData()">
+                <i class="fa-solid fa-rotate-right"></i> Refresh
+            </button>
+        </div>
+    </header>
+
+    <!-- Stats Cards Row -->
+    <div class="stats-grid">
+        <div class="stat-card glass-panel">
+            <div class="stat-info">
+                <h3>Authorized USB Rules</h3>
+                <div id="stat-allowed" class="stat-value">-</div>
+            </div>
+            <i class="fa-solid fa-circle-check stat-icon success"></i>
+        </div>
+        <div class="stat-card glass-panel">
+            <div class="stat-info">
+                <h3>Blocked USB Devices</h3>
+                <div id="stat-blocked" class="stat-value">-</div>
+            </div>
+            <i class="fa-solid fa-circle-xmark stat-icon danger"></i>
+        </div>
+        <div class="stat-card glass-panel">
+            <div class="stat-info">
+                <h3>Active temporary links</h3>
+                <div id="stat-temporary" class="stat-value">-</div>
+            </div>
+            <i class="fa-solid fa-stopwatch stat-icon warning"></i>
+        </div>
+    </div>
+
+    <!-- Main Grid Content -->
+    <div class="workspace">
+        
+        <!-- Section A: Devices Panel -->
+        <div class="glass-panel" style="display: flex; flex-direction: column;">
+            <div class="section-header">
+                <h2 class="section-title">
+                    <i class="fa-solid fa-circle-nodes"></i> Detected Devices
+                </h2>
+                <div id="blocked-count-badge" class="badge badge-blocked" style="display: none;">1 BLOCKED</div>
+            </div>
+            <div class="tabs-header">
+                <button id="tab-dev-blocked" class="tab-btn active" onclick="switchDeviceTab('blocked', this)">Blocked Devices</button>
+                <button id="tab-dev-allowed" class="tab-btn" onclick="switchDeviceTab('allowed', this)">Allowed Devices</button>
+            </div>
+            <div id="blocked-devices-list" class="device-list">
+                <div class="empty-state">
+                    <div class="spinner"></div>
+                    <p>Scanning USB controllers...</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Section B: Active Policy Rules Panel -->
+        <div class="glass-panel" style="display: flex; flex-direction: column;">
+            <div class="section-header">
+                <h2 class="section-title">
+                    <i class="fa-solid fa-scale-balanced"></i> Active Access Policies
+                </h2>
+            </div>
+            <div class="tabs-header">
+                <button class="tab-btn active" onclick="switchTab('All', this)">All</button>
+                <button class="tab-btn" onclick="switchTab('System', this)">System</button>
+                <button class="tab-btn" onclick="switchTab('Permanent', this)">Permanent</button>
+                <button class="tab-btn" onclick="switchTab('Temporary', this)">Temporary</button>
+            </div>
+            <div id="active-rules-list" class="rules-list">
+                <div class="empty-state">
+                    <div class="spinner"></div>
+                    <p>Loading policies...</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Section C: Logs Panel -->
+        <div class="glass-panel logs-panel">
+            <div class="section-header">
+                <h2 class="section-title">
+                    <i class="fa-solid fa-terminal"></i> Security Logs & Audit Trail
+                </h2>
+                <span style="font-size: 0.75rem; color: var(--text-secondary);">Real-time (/var/log/usbguard-approval.log)</span>
+            </div>
+            <div style="padding: 1.25rem;">
+                <div id="console-logs" class="console-box">
+                    <div class="console-line">Loading logs...</div>
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- Secure Device Inspector Side Drawer -->
+    <div id="inspector-overlay" class="inspector-overlay" onclick="handleOutsideClick(event)">
+        <div class="inspector-drawer glass-panel" onclick="event.stopPropagation()">
+            <button class="drawer-close" onclick="closeInspector()">
+                <i class="fa-solid fa-xmark"></i>
+            </button>
+            
+            <div class="inspector-header">
+                <div id="inspector-avatar" class="device-avatar avatar-blocked" style="width: 50px; height: 50px; font-size: 1.5rem;">
+                    <i class="fa-solid fa-usb"></i>
+                </div>
+                <div>
+                    <h2 id="inspector-name">UDisk</h2>
+                    <div id="inspector-status-badge" class="badge badge-blocked">Blocked</div>
+                </div>
+            </div>
+
+            <!-- Block A: Hardware Signature (from usbguard) -->
+            <div class="drawer-section">
+                <div class="drawer-section-title"><i class="fa-solid fa-microchip"></i> Device Hardware Signature</div>
+                <div class="property-sheet">
+                    <div class="prop-row">
+                        <div class="prop-name">Hardware ID</div>
+                        <div id="inspector-id" class="prop-value">-</div>
+                    </div>
+                    <div class="prop-row">
+                        <div class="prop-name">Serial Number</div>
+                        <div id="inspector-serial" class="prop-value">-</div>
+                    </div>
+                    <div class="prop-row">
+                        <div class="prop-name">Port path</div>
+                        <div id="inspector-port" class="prop-value">-</div>
+                    </div>
+                    <div class="prop-row">
+                        <div class="prop-name">Device Hash</div>
+                        <div id="inspector-hash" class="prop-value" style="font-size: 0.75rem; font-family: monospace;">-</div>
+                    </div>
+                    <div class="prop-row">
+                        <div class="prop-name">Parent Hub</div>
+                        <div id="inspector-parent" class="prop-value" style="font-size: 0.75rem; font-family: monospace;">-</div>
+                    </div>
+                    <div class="prop-row">
+                        <div class="prop-name">Interfaces</div>
+                        <div id="inspector-interfaces" class="prop-value">-</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Block B: lsusb -v Deep Detail Section (loaded asynchronously) -->
+            <div class="drawer-section" id="detail-section" style="display: none;">
+                <div class="drawer-section-title"><i class="fa-solid fa-magnifying-glass"></i> USB Deep Scan (lsusb -v)</div>
+                <div id="detail-loading" style="display: none; text-align: center; padding: 1rem;">
+                    <div class="spinner"></div>
+                    <div style="font-size: 0.75rem; color: var(--text-secondary); margin-top: 0.5rem;">Running lsusb -v scan...</div>
+                </div>
+                <div id="detail-content"></div>
+            </div>
+
+            <!-- Block C: Device Fingerprint Verification -->
+            <div class="drawer-section" id="fingerprint-section" style="display: none;">
+                <div class="drawer-section-title"><i class="fa-solid fa-fingerprint"></i> Device Fingerprint</div>
+            </div>
+
+            <!-- Block D: Persistence Controls -->
+            <div class="drawer-section" id="inspector-controls-section">
+                <div class="drawer-section-title"><i class="fa-solid fa-gears"></i> Access Authorization Panel</div>
+                <div class="persistence-panel">
+                    <input type="hidden" id="inspector-device-id">
+                    <input type="hidden" id="inspector-vid-pid">
+                    
+                    <div class="form-group">
+                        <div class="type-selector">
+                            <div id="drawer-type-temp" class="select-card active" onclick="selectApprovalType('T')">
+                                <i class="fa-regular fa-clock"></i>
+                                <h5>Temporary</h5>
+                            </div>
+                            <div id="drawer-type-perm" class="select-card" onclick="selectApprovalType('P')">
+                                <i class="fa-solid fa-infinity"></i>
+                                <h5>Permanent</h5>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Temporary TTL Options -->
+                    <div id="drawer-ttl-options" class="ttl-container" style="display: block;">
+                        <div class="ttl-presets">
+                            <button type="button" class="preset-btn active" onclick="selectTTL(300, this)">5m</button>
+                            <button type="button" class="preset-btn" onclick="selectTTL(1800, this)">30m</button>
+                            <button type="button" class="preset-btn" onclick="selectTTL(3600, this)">1h</button>
+                            <button type="button" class="preset-btn" onclick="selectTTL(86400, this)">24h</button>
+                        </div>
+                        <input type="number" id="drawer-ttl-seconds" class="input-custom-ttl" placeholder="Custom duration (seconds)" value="300" oninput="customTTLChanged()">
+                    </div>
+                </div>
+            </div>
+
+            <!-- Block E: Action Buttons -->
+            <div class="action-button-group">
+                <button id="btn-save-auth" class="btn-action" onclick="saveAuthorization()">
+                    <i class="fa-solid fa-shield-halved"></i> Apply Authorization
+                </button>
+                <button id="btn-block-now" class="btn-danger-outline" onclick="blockDeviceImmediately()">
+                    <i class="fa-solid fa-circle-minus"></i> Block Immediately (Revoke Access)
+                </button>
+            </div>
+
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/script.js') }}"></script>
+</body>
+</html>
