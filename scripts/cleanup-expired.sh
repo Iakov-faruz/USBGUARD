@@ -100,21 +100,25 @@ _awk_ttl_filter() {
         } else if (state == 1) {
             # ── RULE_FOUND State ──────────────────────────────
             if ($0 ~ /^[[:space:]]*# ttl_epoch:[[:space:]]*[0-9]+/) {
-                epoch_val = $0
-                gsub(/^[[:space:]]*# ttl_epoch:[[:space:]]*/, "", epoch_val)
-                gsub(/[[:space:]]*$/, "", epoch_val)
+                # Found ttl_epoch
                 buffer = buffer ORS $0
                 state = 2
+
             } else if ($0 ~ /^[[:space:]]*allow/) {
-                # FAIL-CLOSED: orphaned rule (no ttl_epoch) - discard it
+                # FAIL-CLOSED: orphaned rule (new allow before ttl_epoch)
                 expired_count++
                 print "WARN: Discarded orphaned allow rule (no ttl_epoch): " buffer > "/dev/stderr"
                 buffer = $0
                 state = 1
+
+            } else if ($0 ~ /^[[:space:]]*$/ || $0 ~ /^[[:space:]]*#/) {
+                # תיקון: התעלמות משורות ריקות או הערות בין allow ל‑ttl_epoch
+                buffer = buffer ORS $0
+
             } else {
-                # FAIL-CLOSED: orphaned rule (no ttl_epoch) - discard it
+                # FAIL-CLOSED: unexpected content
                 expired_count++
-                print "WARN: Discarded orphaned allow rule (no ttl_epoch): " buffer > "/dev/stderr"
+                print "WARN: Discarded orphaned allow rule (unexpected content): " buffer > "/dev/stderr"
                 buffer = ""
                 print $0
                 state = 0
@@ -129,10 +133,12 @@ _awk_ttl_filter() {
             epoch = int(comment_line)
 
             if (epoch <= now) {
+                # Rule expired
                 expired_count++
                 state = 0
                 buffer = ""
             } else {
+                # Rule still valid
                 print buffer
                 state = 3
                 buffer = ""
@@ -144,7 +150,7 @@ _awk_ttl_filter() {
             state = 0
 
         } else if (state == 4) {
-            # ── SKIP State ────────────────────────────────────
+            # ── SKIP State (unused fallback) ──────────────────
             state = 0
             if ($0 ~ /^[[:space:]]*allow/) {
                 buffer = $0
@@ -162,11 +168,7 @@ _awk_ttl_filter() {
             print "WARN: Discarded trailing orphaned allow rule: " buffer > "/dev/stderr"
         }
 
-        if (expired_count > 0) {
-            print "EXPIRED_COUNT=" expired_count > "/dev/stderr"
-        } else {
-            print "EXPIRED_COUNT=0" > "/dev/stderr"
-        }
+        print "EXPIRED_COUNT=" expired_count > "/dev/stderr"
     }
     ' "$temp_rules_file" 2>/dev/null
 }
@@ -310,7 +312,7 @@ main() {
     log_audit "CLEANUP" "Cleaned ${expired_count:-0} expired temporary rule(s)"
     log_session_summary "CLEANUP" "Cleaned ${expired_count:-0} rules" 0 "$duration"
     exit 0
-}� POINT ROLLBACK ───────────────────────────────────────────────
+}� POINT ROLLBACK ───────────────────────────────────────────────
         # משחזרים רק את 90-temporary.rules מהגיבוי האחרון
         # כדי לא לשחזר חוקים שפג תוקפם.
         if [[ -n "$BACKUP_FILE" ]] && [[ -f "$BACKUP_FILE" ]]; then

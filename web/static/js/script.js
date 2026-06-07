@@ -1,30 +1,50 @@
-let currentTab = "All";
-let currentDeviceTab = "blocked";
-let activeApprovalType = "T";
-let selectedTTL = 300;
-let allDevices = [];
-let allRules = [];
-let activeTimers = [];
-let currentDetailData = null;
-let currentFingerprint = null;
+/* ==========================================================================
+   USBGuard Shield Manager - Frontend Logic
+   Version: 2.2 (Security Hardened)
+   ========================================================================== */
 
+// --- Global State Variables ---
+let currentTab = "All";          // Tab currently active in Rules panel
+let currentDeviceTab = "blocked"; // Tab currently active in Devices panel
+let activeApprovalType = "T";    // Default approval type: Temporary
+let selectedTTL = 300;           // Default TTL in seconds (5 minutes)
+let allDevices = [];             // Array storing all detected USB devices
+let allRules = [];               // Array storing all active USBGuard rules
+let activeTimers = [];           // Array for managing countdown timers UI
+let currentDetailData = null;    // Stores detailed lsusb data for the inspected device
+let currentFingerprint = null;   // Stores the fingerprint of the currently inspected device
+
+// --- Initialization ---
 document.addEventListener('DOMContentLoaded', () => {
+    // Load initial data
     reloadData();
-    setInterval(reloadData, 10000);
-    setInterval(updateCountdowns, 1000);
+    
+    // Set up auto-refresh intervals
+    setInterval(reloadData, 10000);      // Refresh data every 10 seconds
+    setInterval(updateCountdowns, 1000); // Update TTL countdowns every second
 });
 
+/**
+ * Main function to fetch all fresh data from the API
+ */
 function reloadData() {
     fetchStatus();
     fetchDevices();
     fetchRules();
 }
 
-// ─── System Status ──────────────────────────────────────────────
+// ========================================================================
+// 1. SYSTEM STATUS & DAEMON MONITORING
+// ========================================================================
+
+/**
+ * Fetches the status of the USBGuard daemon and the TTL Reaper timer
+ */
 function fetchStatus() {
     fetch('/api/status')
         .then(res => res.json())
         .then(data => {
+            // Update Daemon Badge
             const daemonBadge = document.getElementById('daemon-badge');
             if (data.daemon_active) {
                 daemonBadge.className = "status-badge status-active";
@@ -34,6 +54,7 @@ function fetchStatus() {
                 daemonBadge.innerHTML = '<i class="fa-solid fa-power-off"></i> Daemon: Stopped';
             }
 
+            // Update Reaper Timer Badge
             const reaperBadge = document.getElementById('reaper-badge');
             if (data.timer_active) {
                 reaperBadge.className = "status-badge status-active";
@@ -43,12 +64,19 @@ function fetchStatus() {
                 reaperBadge.innerHTML = '<i class="fa-regular fa-clock"></i> Reaper: Inactive';
             }
 
+            // Update Total Allowed Rules Count
             document.getElementById('stat-allowed').innerText = data.active_rules_count || 0;
         })
         .catch(err => console.error("Error fetching status:", err));
 }
 
-// ─── Devices ────────────────────────────────────────────────────
+// ========================================================================
+// 2. DEVICE MANAGEMENT
+// ========================================================================
+
+/**
+ * Fetches the list of connected USB devices (Blocked/Allowed)
+ */
 function fetchDevices() {
     fetch('/api/devices')
         .then(res => res.json())
@@ -57,22 +85,31 @@ function fetchDevices() {
             renderDevicesList();
         })
         .catch(err => {
+            // Show error state if API fails
             document.getElementById('blocked-devices-list').innerHTML = `
-                <div class="empty-state">
-                    <i class="fa-solid fa-triangle-exclamation empty-icon" style="color:var(--danger)"></i>
-                    <p style="color:var(--danger)">IPC channel did not respond. Verify USBGuard daemon status.</p>
-                </div>`;
+            <div class="empty-state">
+                <i class="fa-solid fa-triangle-exclamation empty-icon" style="color:var(--danger)"></i>
+                <p style="color:var(--danger)">IPC channel did not respond. Verify USBGuard daemon status.</p>
+            </div>`;
         });
 }
 
+/**
+ * Renders the list of devices based on the current tab (Blocked/Allowed)
+ * SECURITY FIX: Uses escapeHtml() to prevent XSS attacks via device names.
+ */
 function renderDevicesList() {
     const listContainer = document.getElementById('blocked-devices-list');
     const blockedCountBadge = document.getElementById('blocked-count-badge');
+    
+    // Clear current list
     listContainer.innerHTML = '';
 
+    // Calculate stats
     const blockedDevices = allDevices.filter(d => d.status === 'block');
     document.getElementById('stat-blocked').innerText = blockedDevices.length;
 
+    // Update badge visibility
     if (blockedDevices.length > 0) {
         blockedCountBadge.style.display = 'block';
         blockedCountBadge.innerText = `${blockedDevices.length} BLOCKED`;
@@ -80,59 +117,78 @@ function renderDevicesList() {
         blockedCountBadge.style.display = 'none';
     }
 
+    // Filter devices based on active tab
     const targetDevices = allDevices.filter(d => 
         currentDeviceTab === 'blocked' ? d.status === 'block' : d.status === 'allow'
     );
 
+    // Handle empty state
     if (targetDevices.length === 0) {
+        // Note: currentDeviceTab is safe as it's controlled internally, but we escape it just in case
         listContainer.innerHTML = `
             <div class="empty-state">
                 <i class="fa-solid fa-circle-check empty-icon" style="color:var(--success); opacity:0.3;"></i>
-                <p>No ${currentDeviceTab} USB devices connected.</p>
+                <p>No ${escapeHtml(currentDeviceTab)} USB devices connected.</p>
             </div>`;
         return;
     }
 
+    // Render each device item
     targetDevices.forEach(dev => {
         const avatarClass = dev.status === 'block' ? 'avatar-blocked' : 'avatar-allowed';
         const badgeClass = dev.status === 'block' ? 'badge-blocked' : 'badge-allowed';
 
+        // 🔒 SECURITY: Sanitize all dynamic content before inserting into HTML
+        const safeName = escapeHtml(dev.name || 'Generic USB Device');
+        const safeId = escapeHtml(dev.id);
+        const safeStatus = escapeHtml(dev.status);
+        const safeDeviceId = escapeHtml(dev.device_id);
+
         const itemHTML = `
-            <div class="device-item" onclick="openInspector('${dev.id}', 'device', '${dev.device_id}')">
+            <div class="device-item" onclick="openInspector('${safeId}', 'device', '${safeDeviceId}')">
                 <div class="device-meta">
                     <div class="device-avatar ${avatarClass}">
                         <i class="fa-solid fa-usb"></i>
                     </div>
                     <div class="device-details">
-                        <h4>${dev.name || 'Generic USB Device'}</h4>
+                        <h4>${safeName}</h4>
                         <div class="device-sub">
-                            <span><i class="fa-solid fa-tag"></i> ID: ${dev.id}</span>
-                            <span><span class="badge ${badgeClass}">${dev.status}</span></span>
+                            <span><i class="fa-solid fa-tag"></i> ID: ${safeId}</span>
+                            <span><span class="badge ${badgeClass}">${safeStatus}</span></span>
                         </div>
                     </div>
                 </div>
                 <i class="fa-solid fa-angle-right" style="color:var(--text-secondary)"></i>
             </div>`;
+        
         listContainer.innerHTML += itemHTML;
     });
 }
 
+/**
+ * Switches between Blocked and Allowed device tabs
+ */
 function switchDeviceTab(tabType, el) {
     currentDeviceTab = tabType;
-
     document.getElementById('tab-dev-blocked').classList.remove('active');
     document.getElementById('tab-dev-allowed').classList.remove('active');
     el.classList.add('active');
-
     renderDevicesList();
 }
 
-// ─── Rules ──────────────────────────────────────────────────────
+// ========================================================================
+// 3. RULES MANAGEMENT
+// ========================================================================
+
+/**
+ * Fetches the list of active USBGuard rules
+ */
 function fetchRules() {
     fetch('/api/rules')
         .then(res => res.json())
         .then(data => {
             allRules = data;
+            // Update temporary rules counter
             const tempRules = allRules.filter(r => r.category === 'Temporary');
             document.getElementById('stat-temporary').innerText = tempRules.length;
             renderRulesList();
@@ -140,14 +196,20 @@ function fetchRules() {
         .catch(err => console.error("Error fetching rules:", err));
 }
 
+/**
+ * Renders the list of rules based on the current category filter
+ * SECURITY FIX: Uses escapeHtml() to prevent XSS via rule names or categories.
+ */
 function renderRulesList() {
     const listContainer = document.getElementById('active-rules-list');
     listContainer.innerHTML = '';
 
-    const filteredRules = currentTab === "All" 
-        ? allRules 
+    // Filter rules
+    const filteredRules = currentTab === "All"
+        ? allRules
         : allRules.filter(r => r.category === currentTab);
 
+    // Handle empty state
     if (filteredRules.length === 0) {
         listContainer.innerHTML = `
             <div class="empty-state">
@@ -157,81 +219,95 @@ function renderRulesList() {
         return;
     }
 
-    activeTimers = [];
+    activeTimers = []; // Reset timers for new render
 
     filteredRules.forEach((rule, idx) => {
         let expiryHTML = '';
         let progressHTML = '';
         let fingerprintIndicator = '';
 
+        // Handle Temporary Rule Countdowns
         if (rule.category === 'Temporary' && rule.ttl_epoch) {
             const epochNow = Math.floor(Date.now() / 1000);
             const remainingSec = rule.ttl_epoch - epochNow;
-
+            
             if (remainingSec > 0) {
                 const timerId = `countdown-timer-${idx}`;
                 const progressId = `countdown-progress-${idx}`;
+                
                 expiryHTML = `<span id="${timerId}" class="countdown-span" style="font-size: 0.75rem; color: var(--warning); margin-left: 0.5rem;" data-expiry="${rule.ttl_epoch}"><i class="fa-solid fa-stopwatch"></i> Calculating...</span>`;
-
+                
                 progressHTML = `
                     <div class="expiry-progress-container" style="display:block;">
                         <div id="${progressId}" class="expiry-progress-bar"></div>
                     </div>`;
-
+                
                 activeTimers.push({
                     timerId: timerId,
                     progressId: progressId,
                     expiry: rule.ttl_epoch,
-                    total: 3600
+                    total: 3600 // Default max for progress bar calculation
                 });
             } else {
                 expiryHTML = `<span style="font-size: 0.75rem; color: var(--danger); margin-left: 0.5rem;"><i class="fa-solid fa-stopwatch"></i> Expired</span>`;
             }
         }
 
-        // Show fingerprint icon if stored
+        // Show fingerprint icon if rule has one
         if (rule.fingerprint) {
             fingerprintIndicator = `<i class="fa-solid fa-fingerprint" style="color: var(--info); font-size: 0.75rem; margin-left: 0.3rem;" title="Device fingerprinted"></i>`;
         }
 
+        // 🔒 SECURITY: Sanitize dynamic content
+        const safeRuleName = escapeHtml(rule.name || 'System Authorization Block');
+        const safeRuleId = escapeHtml(rule.id || 'system');
+        const safeCategory = escapeHtml(rule.category);
+
         const itemHTML = `
-            <div class="rule-item" onclick="openInspector('${rule.id}', 'rule')">
+            <div class="rule-item" onclick="openInspector('${safeRuleId}', 'rule')">
                 <div style="width: 100%;">
                     <div style="display: flex; justify-content: space-between; align-items: center;">
                         <div class="device-meta">
                             <div class="device-details">
-                                <h4 style="font-size: 0.95rem;">${rule.name || 'System Authorization Block'} ${fingerprintIndicator}</h4>
+                                <h4 style="font-size: 0.95rem;">${safeRuleName} ${fingerprintIndicator}</h4>
                                 <div class="device-sub">
-                                    <span><i class="fa-solid fa-microchip"></i> ID: ${rule.id || 'system'}</span>
+                                    <span><i class="fa-solid fa-microchip"></i> ID: ${safeRuleId}</span>
                                     ${expiryHTML}
                                 </div>
                             </div>
                         </div>
-                        <span class="rule-category-badge cat-${rule.category}">${rule.category}</span>
+                        <span class="rule-category-badge cat-${safeCategory}">${safeCategory}</span>
                     </div>
                     ${progressHTML}
                 </div>
             </div>`;
+
         listContainer.innerHTML += itemHTML;
     });
 
     updateCountdowns();
 }
 
+/**
+ * Updates the visual countdown timers and progress bars for temporary rules
+ */
 function updateCountdowns() {
     const epochNow = Math.floor(Date.now() / 1000);
-
+    
     activeTimers.forEach(t => {
         const el = document.getElementById(t.timerId);
         const prg = document.getElementById(t.progressId);
+        
         if (!el) return;
 
         const remaining = t.expiry - epochNow;
+
         if (remaining > 0) {
+            // Format time string
             const hours = Math.floor(remaining / 3600);
             const mins = Math.floor((remaining % 3600) / 60);
             const secs = remaining % 60;
-
+            
             let timerStr = "";
             if (hours > 0) timerStr += `${hours}h `;
             if (mins > 0 || hours > 0) timerStr += `${mins}m `;
@@ -239,10 +315,11 @@ function updateCountdowns() {
 
             el.innerHTML = `<i class="fa-solid fa-stopwatch"></i> Expires in ${timerStr}`;
 
+            // Update progress bar width and color
             if (prg) {
                 const percent = Math.max(0, Math.min(100, (remaining / t.total) * 100));
                 prg.style.width = `${percent}%`;
-
+                
                 if (percent < 15) {
                     prg.style.background = 'var(--danger)';
                     el.style.color = 'var(--danger)';
@@ -260,6 +337,9 @@ function updateCountdowns() {
     });
 }
 
+/**
+ * Switches between rule categories (All, System, Permanent, Temporary)
+ */
 function switchTab(tabName, el) {
     currentTab = tabName;
     const tabs = document.querySelectorAll('.tab-btn');
@@ -268,13 +348,18 @@ function switchTab(tabName, el) {
     renderRulesList();
 }
 
+// ========================================================================
+// 4. INSPECTOR DRAWER (SIDE PANEL)
+// ========================================================================
 
-
-// ─── Inspector / Drawer ────────────────────────────────────────
+/**
+ * Opens the side drawer with details for a specific device or rule
+ */
 function openInspector(deviceVidPid, mode, deviceId) {
     let deviceData = null;
     let ruleData = null;
 
+    // Find data in local arrays
     deviceData = allDevices.find(d => d.id === deviceVidPid);
     ruleData = allRules.find(r => r.id === deviceVidPid);
 
@@ -283,6 +368,7 @@ function openInspector(deviceVidPid, mode, deviceId) {
         return;
     }
 
+    // Extract fields safely
     const name = deviceData ? deviceData.name : ruleData.name;
     const status = deviceData ? deviceData.status : (ruleData.category === 'Temporary' ? 'Temporary' : 'Allowed');
     const serial = deviceData ? deviceData.serial : ruleData.serial;
@@ -292,6 +378,7 @@ function openInspector(deviceVidPid, mode, deviceId) {
     const interfaces = deviceData ? deviceData.interfaces : ruleData.interfaces;
     const devId = deviceData ? deviceData.device_id : '';
 
+    // Populate Inspector Header
     document.getElementById('inspector-name').innerText = name || 'USB Device Block';
     document.getElementById('inspector-id').innerText = deviceVidPid;
     document.getElementById('inspector-serial').innerText = serial || 'N/A';
@@ -300,18 +387,20 @@ function openInspector(deviceVidPid, mode, deviceId) {
     document.getElementById('inspector-parent').innerText = parentHash;
     document.getElementById('inspector-interfaces').innerText = interfaces || 'N/A';
 
-    // Store VID:PID and Device ID for actions
+    // Store IDs for actions
     document.getElementById('inspector-device-id').value = devId;
     document.getElementById('inspector-vid-pid').value = deviceVidPid;
 
-    // Status badge and avatar
+    // Update Status Badge & Avatar
     const statusBadge = document.getElementById('inspector-status-badge');
     const avatarDiv = document.getElementById('inspector-avatar');
-
+    
     if (status === 'block') {
         statusBadge.className = "badge badge-blocked";
         statusBadge.innerText = "Blocked";
         avatarDiv.className = "device-avatar avatar-blocked";
+        
+        // Show Authorize button, hide Block button
         document.getElementById('inspector-controls-section').style.display = 'block';
         document.getElementById('btn-save-auth').style.display = 'flex';
         document.getElementById('btn-save-auth').innerHTML = '<i class="fa-solid fa-shield-halved"></i> Authorize Connection';
@@ -320,13 +409,15 @@ function openInspector(deviceVidPid, mode, deviceId) {
         statusBadge.className = "badge badge-allowed";
         statusBadge.innerText = ruleData && ruleData.category === 'Temporary' ? "Temporary Link" : "Authorized";
         avatarDiv.className = "device-avatar avatar-allowed";
+        
+        // Show Update/Block buttons
         document.getElementById('inspector-controls-section').style.display = 'block';
         document.getElementById('btn-save-auth').style.display = 'flex';
         document.getElementById('btn-save-auth').innerHTML = '<i class="fa-solid fa-floppy-disk"></i> Update Status';
         document.getElementById('btn-block-now').style.display = 'flex';
     }
 
-    // Populate type selector
+    // Set Approval Type Selector based on existing rule
     if (ruleData && ruleData.category === 'Temporary') {
         selectApprovalType('T');
         if (ruleData.ttl_epoch) {
@@ -342,30 +433,32 @@ function openInspector(deviceVidPid, mode, deviceId) {
         selectApprovalType('T');
     }
 
-    // Store fingerprint from rule if exists
+    // Store fingerprint if available
     currentFingerprint = ruleData ? ruleData.fingerprint : null;
 
-    // Reset lsusb detail section to loading
+    // Reset Detail Section (Loading state)
     document.getElementById('detail-section').style.display = 'none';
     document.getElementById('detail-loading').style.display = 'block';
     document.getElementById('detail-content').innerHTML = '';
 
-    // Reset fingerprint section
+    // Reset Fingerprint Section
     const fpSection = document.getElementById('fingerprint-section');
     fpSection.style.display = 'block';
     fpSection.innerHTML = `
         <div class="fingerprint-verdict no-scan">
             <i class="fa-solid fa-fingerprint"></i> Scanning device...
         </div>`;
-    document.getElementById('btn-block-now').style.display = status !== 'block' ? 'flex' : 'none';
 
-    // Open drawer immediately
+    // Open the drawer
     document.getElementById('inspector-overlay').classList.add('active');
 
-    // Fetch lsusb detail and fingerprint asynchronously
+    // Fetch deep details asynchronously
     fetchDeviceDetail(deviceVidPid);
 }
 
+/**
+ * Fetches detailed USB information using lsusb -v via the API
+ */
 function fetchDeviceDetail(vidPid) {
     fetch(`/api/device-detail?id=${vidPid}`)
         .then(res => res.json())
@@ -379,7 +472,6 @@ function fetchDeviceDetail(vidPid) {
                     </div>`;
                 document.getElementById('detail-section').style.display = 'block';
                 
-                // Show no-scan for fingerprint too
                 document.getElementById('fingerprint-section').innerHTML = `
                     <div class="fingerprint-verdict no-scan">
                         <i class="fa-solid fa-fingerprint"></i> Cannot scan device. It may not be connected.
@@ -389,12 +481,11 @@ function fetchDeviceDetail(vidPid) {
 
             currentDetailData = data;
             const fp = data.fingerprint || {};
-            const parsed = data.parsed || {};
-
-            // Render the detailed lsusb info
+            
+            // Render the parsed lsusb output
             renderDeviceDetail(data);
-
-            // Check fingerprint vs stored
+            
+            // Check fingerprint against stored one
             checkFingerprint(vidPid, fp, currentFingerprint);
         })
         .catch(err => {
@@ -407,6 +498,10 @@ function fetchDeviceDetail(vidPid) {
         });
 }
 
+/**
+ * Renders the parsed lsusb -v output into the inspector drawer
+ * SECURITY FIX: Uses escapeHtml() for all raw text fields.
+ */
 function renderDeviceDetail(data) {
     const parsed = data.parsed || {};
     const device = parsed.device || {};
@@ -423,96 +518,99 @@ function renderDeviceDetail(data) {
     // Bus Information
     if (busInfo.bus) {
         html += `
-            <div class="detail-table-section">
-                <h6>Bus & Connection</h6>
-                <div class="property-sheet">
-                    <div class="prop-row">
-                        <div class="prop-name">Bus Address</div>
-                        <div class="prop-value">Bus ${busInfo.bus} Device ${busInfo.device}</div>
-                    </div>
-                    <div class="prop-row">
-                        <div class="prop-name">Description</div>
-                        <div class="prop-value">${busInfo.description || 'N/A'}</div>
-                    </div>
+        <div class="detail-table-section">
+            <h6>Bus & Connection</h6>
+            <div class="property-sheet">
+                <div class="prop-row">
+                    <div class="prop-name">Bus Address</div>
+                    <div class="prop-value">Bus ${busInfo.bus} Device ${busInfo.device}</div>
                 </div>
-            </div>`;
+                <div class="prop-row">
+                    <div class="prop-name">Description</div>
+                    <div class="prop-value">${escapeHtml(busInfo.description || 'N/A')}</div>
+                </div>
+            </div>
+        </div>`;
     }
 
     // USB Specs
     html += `
-        <div class="detail-table-section">
-            <h6>USB Specification</h6>
-            <div class="property-sheet">
-                <div class="prop-row">
-                    <div class="prop-name">USB Version</div>
-                    <div class="prop-value">${device.bcdUSB || 'N/A'}</div>
-                </div>
-                <div class="prop-row">
-                    <div class="prop-name">Device Class</div>
-                    <div class="prop-value">${device.bDeviceClass || 'N/A'} ${device.bDeviceSubClass || ''}</div>
-                </div>
-                <div class="prop-row">
-                    <div class="prop-name">Max Packet Size</div>
-                    <div class="prop-value">${device.bMaxPacketSize0 || 'N/A'}</div>
-                </div>
-                <div class="prop-row">
-                    <div class="prop-name">Max Power</div>
-                    <div class="prop-value">${config.MaxPower || 'N/A'} ${config.power_type ? '(' + config.power_type + ')' : ''}</div>
-                </div>
-                <div class="prop-row">
-                    <div class="prop-name">Device Status</div>
-                    <div class="prop-value">${parsed.status || 'N/A'}</div>
-                </div>
+    <div class="detail-table-section">
+        <h6>USB Specification</h6>
+        <div class="property-sheet">
+            <div class="prop-row">
+                <div class="prop-name">USB Version</div>
+                <div class="prop-value">${escapeHtml(device.bcdUSB || 'N/A')}</div>
             </div>
-        </div>`;
+            <div class="prop-row">
+                <div class="prop-name">Device Class</div>
+                <div class="prop-value">${escapeHtml(device.bDeviceClass || 'N/A')} ${escapeHtml(device.bDeviceSubClass || '')}</div>
+            </div>
+            <div class="prop-row">
+                <div class="prop-name">Max Packet Size</div>
+                <div class="prop-value">${escapeHtml(device.bMaxPacketSize0 || 'N/A')}</div>
+            </div>
+            <div class="prop-row">
+                <div class="prop-name">Max Power</div>
+                <div class="prop-value">${escapeHtml(config.MaxPower || 'N/A')} ${config.power_type ? '(' + escapeHtml(config.power_type) + ')' : ''}</div>
+            </div>
+            <div class="prop-row">
+                <div class="prop-name">Device Status</div>
+                <div class="prop-value">${escapeHtml(parsed.status || 'N/A')}</div>
+            </div>
+        </div>
+    </div>`;
 
     // Manufacturer & Identity
     html += `
-        <div class="detail-table-section">
-            <h6>Manufacturer & Identity</h6>
-            <div class="property-sheet">
-                <div class="prop-row">
-                    <div class="prop-name">Manufacturer</div>
-                    <div class="prop-value">${device.iManufacturer || 'N/A'}</div>
-                </div>
-                <div class="prop-row">
-                    <div class="prop-name">Product</div>
-                    <div class="prop-value">${device.iProduct || 'N/A'}</div>
-                </div>
-                <div class="prop-row">
-                    <div class="prop-name">Serial</div>
-                    <div class="prop-value" style="font-family: monospace; word-break: break-all;">${device.iSerial || 'N/A'}</div>
-                </div>
-                <div class="prop-row">
-                    <div class="prop-name">Vendor ID</div>
-                    <div class="prop-value">${device.idVendor || 'N/A'}</div>
-                </div>
-                <div class="prop-row">
-                    <div class="prop-name">Product ID</div>
-                    <div class="prop-value">${device.idProduct || 'N/A'}</div>
-                </div>
-                <div class="prop-row">
-                    <div class="prop-name">BCD Device</div>
-                    <div class="prop-value">${device.bcdDevice || 'N/A'}</div>
-                </div>
+    <div class="detail-table-section">
+        <h6>Manufacturer & Identity</h6>
+        <div class="property-sheet">
+            <div class="prop-row">
+                <div class="prop-name">Manufacturer</div>
+                <div class="prop-value">${escapeHtml(device.iManufacturer || 'N/A')}</div>
             </div>
-        </div>`;
+            <div class="prop-row">
+                <div class="prop-name">Product</div>
+                <div class="prop-value">${escapeHtml(device.iProduct || 'N/A')}</div>
+            </div>
+            <div class="prop-row">
+                <div class="prop-name">Serial</div>
+                <div class="prop-value" style="font-family: monospace; word-break: break-all;">${escapeHtml(device.iSerial || 'N/A')}</div>
+            </div>
+            <div class="prop-row">
+                <div class="prop-name">Vendor ID</div>
+                <div class="prop-value">${escapeHtml(device.idVendor || 'N/A')}</div>
+            </div>
+            <div class="prop-row">
+                <div class="prop-name">Product ID</div>
+                <div class="prop-value">${escapeHtml(device.idProduct || 'N/A')}</div>
+            </div>
+            <div class="prop-row">
+                <div class="prop-name">BCD Device</div>
+                <div class="prop-value">${escapeHtml(device.bcdDevice || 'N/A')}</div>
+            </div>
+        </div>
+    </div>`;
 
     // Interfaces
     if (interfaces.length > 0) {
         html += `
-            <div class="detail-table-section">
-                <h6>Interface Descriptors (${interfaces.length})</h6>
-                <div class="property-sheet">`;
+        <div class="detail-table-section">
+            <h6>Interface Descriptors (${interfaces.length})</h6>
+            <div class="property-sheet">`;
+        
         interfaces.forEach((iface, i) => {
             const d = iface.descriptors || {};
             html += `
-                <div class="prop-row" style="flex-wrap: wrap;">
-                    <div class="prop-name">Interface ${i}</div>
-                    <div class="prop-value">
-                        Class: ${d.bInterfaceClass || 'N/A'} | SubClass: ${d.bInterfaceSubClass || 'N/A'} | Protocol: ${d.bInterfaceProtocol || 'N/A'}
-                    </div>
-                </div>`;
+            <div class="prop-row" style="flex-wrap: wrap;">
+                <div class="prop-name">Interface ${i}</div>
+                <div class="prop-value">
+                    Class: ${escapeHtml(d.bInterfaceClass || 'N/A')} | 
+                    SubClass: ${escapeHtml(d.bInterfaceSubClass || 'N/A')} | 
+                    Protocol: ${escapeHtml(d.bInterfaceProtocol || 'N/A')}
+                </div>
+            </div>`;
         });
         html += `</div></div>`;
     }
@@ -520,51 +618,60 @@ function renderDeviceDetail(data) {
     // Endpoints
     if (endpoints.length > 0) {
         html += `
-            <div class="detail-table-section">
-                <h6>Endpoints (${endpoints.length})</h6>
-                <table class="endpoint-table">
-                    <thead>
-                        <tr>
-                            <th>#</th>
-                            <th>Address</th>
-                            <th>Type</th>
-                            <th>Max Packet</th>
-                            <th>Interval</th>
-                        </tr>
-                    </thead>
-                    <tbody>`;
+        <div class="detail-table-section">
+            <h6>Endpoints (${endpoints.length})</h6>
+            <table class="endpoint-table">
+                <thead>
+                    <tr>
+                        <th>#</th>
+                        <th>Address</th>
+                        <th>Type</th>
+                        <th>Max Packet</th>
+                        <th>Interval</th>
+                    </tr>
+                </thead>
+                <tbody>`;
+        
         endpoints.forEach((ep, i) => {
             const d = ep.descriptors || {};
             const addr = d.bEndpointAddress || '';
             const type = d['Transfer Type'] || d.bmAttributes || '';
             const pkt = d.wMaxPacketSize || '';
             const interval = d.bInterval || '';
+            
             html += `
-                <tr>
-                    <td>${i}</td>
-                    <td>${addr}</td>
-                    <td>${type}</td>
-                    <td>${pkt}</td>
-                    <td>${interval}</td>
-                </tr>`;
+            <tr>
+                <td>${i}</td>
+                <td>${escapeHtml(addr)}</td>
+                <td>${escapeHtml(type)}</td>
+                <td>${escapeHtml(pkt)}</td>
+                <td>${escapeHtml(interval)}</td>
+            </tr>`;
         });
         html += `</tbody></table></div>`;
     }
 
-    // Raw data toggle
+    // Raw Output (Sanitized!)
     html += `
-        <div class="detail-table-section">
-            <h6>Raw Output</h6>
-            <div style="background: rgba(1, 3, 7, 0.4); border-radius: 8px; padding: 0.75rem; font-family: monospace; font-size: 0.65rem; color: var(--text-secondary); max-height: 150px; overflow-y: auto; white-space: pre-wrap; word-break: break-all;">${escapeHtml(parsed.raw || '')}</div>
-        </div>`;
+    <div class="detail-table-section">
+        <h6>Raw Output</h6>
+        <div style="background: rgba(1, 3, 7, 0.4); border-radius: 8px; padding: 0.75rem; font-family: monospace; font-size: 0.65rem; color: var(--text-secondary); max-height: 150px; overflow-y: auto; white-space: pre-wrap; word-break: break-all;">${escapeHtml(parsed.raw || '')}</div>
+    </div>`;
 
     document.getElementById('detail-content').innerHTML = html;
     document.getElementById('detail-section').style.display = 'block';
 }
 
+// ========================================================================
+// 5. FINGERPRINT VERIFICATION
+// ========================================================================
+
+/**
+ * Compares the current device fingerprint with the stored one
+ */
 function checkFingerprint(vidPid, currentFp, storedFp) {
     const fpSection = document.getElementById('fingerprint-section');
-    
+
     if (!storedFp) {
         // No stored fingerprint - offer to save
         fpSection.innerHTML = `
@@ -640,13 +747,13 @@ function checkFingerprint(vidPid, currentFp, storedFp) {
 
         // Show mismatches
         if (data.mismatches && data.mismatches.length > 0) {
-            html += `<div style="font-size: 0.75rem; color: var(--danger); margin-bottom: 0.5rem;">⚠ ${data.mismatches.length} field(s) differed:</div>`;
+            html += `<div style="font-size: 0.75rem; color: var(--danger); margin-bottom: 0.5rem;">⚠️ ${data.mismatches.length} field(s) differed:</div>`;
             data.mismatches.forEach(m => {
                 html += `
-                    <div class="fingerprint-mismatch">
-                        <span class="field-name">${m.field}</span>
-                        <span class="field-values">"${m.stored}" → "${m.current}"</span>
-                    </div>`;
+                <div class="fingerprint-mismatch">
+                    <span class="field-name">${m.field}</span>
+                    <span class="field-values">"${m.stored}" → "${m.current}"</span>
+                </div>`;
             });
         }
 
@@ -662,7 +769,7 @@ function checkFingerprint(vidPid, currentFp, storedFp) {
                     <i class="fa-solid fa-rotate"></i> Rescan
                 </button>
             </div>`;
-
+        
         fpSection.innerHTML = html;
     })
     .catch(err => {
@@ -673,99 +780,67 @@ function checkFingerprint(vidPid, currentFp, storedFp) {
     });
 }
 
+/**
+ * Saves the current device fingerprint to the rule file
+ */
 function saveFingerprint(vidPid) {
-    // Get the current fingerprint from the detail data
     if (!currentDetailData || !currentDetailData.fingerprint) {
         alert("No fingerprint data available to save. Try scanning again.");
         return;
     }
 
     const fp = currentDetailData.fingerprint;
-    
-    // Find the button that was clicked
     const buttons = document.querySelectorAll('#fingerprint-section .btn-fingerprint');
     const btn = buttons[0];
     if (!btn) return;
-    
+
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner"></span> Saving...';
 
-    // Save by calling approve with fingerprint
     const deviceId = document.getElementById('inspector-device-id').value;
     const type = activeApprovalType;
     const ttl = document.getElementById('drawer-ttl-seconds').value;
 
-    // Check if rule already exists
+    // Check if rule already exists to decide endpoint
     const ruleExists = allRules.some(r => r.id === vidPid);
     
-    if (ruleExists) {
-        // Just update fingerprint in the rule file directly
-        fetch('/api/approve', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                device_id: deviceId || null,
-                vid_pid: vidPid,
-                type: type,
-                ttl: type === 'T' ? ttl : null,
-                fingerprint: fp
-            })
-        })
-        .then(res => res.json())
-        .then(data => {
-            btn.disabled = false;
-            btn.innerHTML = '<i class="fa-solid fa-floppy-disk"></i> Save Current Fingerprint';
-            if (data.success) {
-                reloadData();
-                setTimeout(() => verifyFingerprint(vidPid), 500);
-            } else {
-                alert(`Error saving fingerprint: ${data.error || 'Unknown error'}`);
-            }
-        })
-        .catch(err => {
-            btn.disabled = false;
-            btn.innerHTML = '<i class="fa-solid fa-floppy-disk"></i> Save Current Fingerprint';
-        });
-    } else {
-        // Need to approve first
-        if (!deviceId) {
-            alert("Device must be connected and selected to save fingerprint with authorization.");
-            btn.disabled = false;
-            btn.innerHTML = '<i class="fa-solid fa-floppy-disk"></i> Save Current Fingerprint';
-            return;
-        }
+    const payload = {
+        device_id: deviceId || null,
+        vid_pid: vidPid,
+        type: type,
+        ttl: type === 'T' ? ttl : null,
+        fingerprint: fp
+    };
 
-        fetch('/api/approve', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                device_id: deviceId,
-                vid_pid: vidPid,
-                type: type,
-                ttl: type === 'T' ? ttl : null,
-                fingerprint: fp
-            })
-        })
-        .then(res => res.json())
-        .then(data => {
-            btn.disabled = false;
-            btn.innerHTML = '<i class="fa-solid fa-floppy-disk"></i> Save Current Fingerprint';
-            if (data.success) {
-                closeInspector();
-                reloadData();
-            } else {
-                alert(`Error: ${data.error}`);
-            }
-        })
-        .catch(err => {
-            btn.disabled = false;
-            btn.innerHTML = '<i class="fa-solid fa-floppy-disk"></i> Save Current Fingerprint';
-        });
-    }
+    // Use approve endpoint for both new and updates in this simplified flow
+    fetch('/api/approve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+    })
+    .then(res => res.json())
+    .then(data => {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fa-solid fa-floppy-disk"></i> Save Current Fingerprint';
+        
+        if (data.success) {
+            reloadData();
+            setTimeout(() => verifyFingerprint(vidPid), 500);
+        } else {
+            alert(`Error saving fingerprint: ${data.error || 'Unknown error'}`);
+        }
+    })
+    .catch(err => {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fa-solid fa-floppy-disk"></i> Save Current Fingerprint';
+        alert(`Network error: ${err}`);
+    });
 }
 
+/**
+ * Re-scans the device fingerprint
+ */
 function verifyFingerprint(vidPid) {
-    // Re-scan the device
     currentFingerprint = null;
     document.getElementById('fingerprint-section').innerHTML = `
         <div class="fingerprint-verdict no-scan">
@@ -773,6 +848,10 @@ function verifyFingerprint(vidPid) {
         </div>`;
     fetchDeviceDetail(vidPid);
 }
+
+// ========================================================================
+// 6. UI HELPERS & ACTIONS
+// ========================================================================
 
 function closeInspector() {
     document.getElementById('inspector-overlay').classList.remove('active');
@@ -788,7 +867,6 @@ function handleOutsideClick(event) {
 
 function selectApprovalType(type) {
     activeApprovalType = type;
-
     const cardTemp = document.getElementById('drawer-type-temp');
     const cardPerm = document.getElementById('drawer-type-perm');
     const ttlContainer = document.getElementById('drawer-ttl-options');
@@ -818,6 +896,9 @@ function customTTLChanged() {
     buttons.forEach(btn => btn.classList.remove('active'));
 }
 
+/**
+ * Sends authorization request to the backend
+ */
 function saveAuthorization() {
     const deviceId = document.getElementById('inspector-device-id').value;
     const vidPid = document.getElementById('inspector-vid-pid').value;
@@ -834,6 +915,7 @@ function saveAuthorization() {
         fingerprint: currentDetailData ? currentDetailData.fingerprint : null
     };
 
+    // Determine endpoint based on whether rule exists
     const ruleExists = allRules.some(r => r.id === vidPid);
     const endpoint = ruleExists ? '/api/change-status' : '/api/approve';
 
@@ -846,7 +928,7 @@ function saveAuthorization() {
     .then(data => {
         saveBtn.disabled = false;
         saveBtn.innerHTML = '<i class="fa-solid fa-shield-halved"></i> Apply Authorization';
-
+        
         if (data.success) {
             closeInspector();
             reloadData();
@@ -861,6 +943,9 @@ function saveAuthorization() {
     });
 }
 
+/**
+ * Blocks a device immediately and removes its rules
+ */
 function blockDeviceImmediately() {
     const deviceId = document.getElementById('inspector-device-id').value;
     const vidPid = document.getElementById('inspector-vid-pid').value;
@@ -885,7 +970,7 @@ function blockDeviceImmediately() {
     .then(data => {
         blockBtn.disabled = false;
         blockBtn.innerHTML = '<i class="fa-solid fa-circle-minus"></i> Block Immediately (Revoke Access)';
-
+        
         if (data.success) {
             closeInspector();
             reloadData();
@@ -900,6 +985,10 @@ function blockDeviceImmediately() {
     });
 }
 
+/**
+ * SECURITY UTILITY: Escapes HTML special characters to prevent XSS
+ * Usage: escapeHtml(userInput)
+ */
 function escapeHtml(str) {
     if (!str) return '';
     const div = document.createElement('div');

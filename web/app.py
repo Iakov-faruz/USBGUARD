@@ -2,6 +2,7 @@ import os
 import subprocess
 import re
 import json
+import tempfile
 from flask import Flask, render_template, jsonify, request
 
 app = Flask(__name__)
@@ -533,9 +534,11 @@ def approve_device():
             "error": f"Failed to approve device: {stderr or stdout}"
         }), 500
 
+import re
+import tempfile
+
 def _append_fingerprint_to_rule(device_id, fingerprint):
-    """Append a fingerprint comment to the rule file that contains the device."""
-    # Build VID:PID in rule format (xxxx:xxxx) from fingerprint fields
+    """Append a fingerprint comment to the rule file atomically and safely."""
     vendor = fingerprint.get('idVendor', '').replace('0x', '').strip()
     product = fingerprint.get('idProduct', '').replace('0x', '').strip()
     rule_vid_pid = f"{vendor}:{product}"
@@ -548,16 +551,33 @@ def _append_fingerprint_to_rule(device_id, fingerprint):
             with open(filepath, 'r') as f:
                 lines = f.readlines()
             
-            # Find the rule that matches this device
+            modified = False
             for i, line in enumerate(lines):
-                if f"allow id {rule_vid_pid}" in line:
-                    # Insert fingerprint comment after the rule line
+                # ✅ תיקון 1: שימוש ב-Regex עם גבולות מילה (\b) למניעת התאמה חלקית
+                if re.search(rf'\ballow\s+id\s+{re.escape(rule_vid_pid)}\b', line):
                     fp_comment = f"# fingerprint: {json.dumps(fingerprint)}\n"
                     lines.insert(i + 1, fp_comment)
-                    with open(filepath, 'w') as f:
+                    modified = True
+                    break
+            
+            if modified:
+                # ✅ תיקון 2: כתיבה אטומית (Atomic Write) למניעת Race Conditions
+                dir_name = os.path.dirname(filepath)
+                fd, tmp_path = tempfile.mkstemp(dir=dir_name, prefix='.tmp_rule_')
+                try:
+                    with os.fdopen(fd, 'w') as f:
                         f.writelines(lines)
+                    # הגדרת הרשאות אבטחה לפני ההחלפה
+                    os.chmod(tmp_path, 0o600)
+                    os.chown(tmp_path, 0, 0)  # root:root
+                    # ✅ החלפה אטומית (mv)
+                    os.replace(tmp_path, filepath)
                     return True
-        except:
+                except Exception:
+                    if os.path.exists(tmp_path):
+                        os.remove(tmp_path)
+                    return False
+        except Exception:
             pass
     return False
 

@@ -24,5 +24,8 @@ ProtectSystem=full
 PrivateTmp=true
 CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 
+# תיקון: מתן הרשאת כתיבה ספציפית לנתיבים הנדרשים למרות ProtectSystem=full
+ReadWritePaths=/etc/usbguard /var/lib/usbguard-manager /var/log /var/tmp
+
 [Install]
 WantedBy=multi-user.target
