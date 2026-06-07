@@ -30,7 +30,7 @@ sudo mkdir -p /var/lock
 
 # ─── שלב 4: יצירת קובץ קונפיגורציה לדמון ──────────────────────
 sudo tee /etc/usbguard/usbguard-daemon.conf > /dev/null << 'EOF'
-RuleDirectory=/etc/usbguard/rules.d
+RuleFolder=/etc/usbguard/rules.d
 ImplicitPolicyTarget=block
 PresentDevicePolicy=apply-policy
 InsertedDevicePolicy=apply-policy

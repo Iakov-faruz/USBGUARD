@@ -7,6 +7,8 @@
 # תומך בבעיות וירטואליזציה (VM), הרשאות מחמירות וגרסה 1.1.2
 # הרצה: sudo ./deploy.sh
 # ═══════════════════════════════════════════════════════════════
+# הערה: פונקציות עזר נמצאות ב-deploy-lib.sh, uninstall ב-deploy-uninstall.sh
+# ═══════════════════════════════════════════════════════════════
 
 set -euo pipefail
 
@@ -26,48 +28,8 @@ readonly COLOR_BOLD='\033[1m'
 ERRORS=0
 WARNINGS=0
 
-# ═══════════════════════════════════════════════════════════════
-# Utility Functions
-# ═══════════════════════════════════════════════════════════════
-
-log_info() {
-    echo -e "${COLOR_CYAN}[INFO]${COLOR_RESET} $*" | tee -a "$DEPLOY_LOG"
-}
-
-log_ok() {
-    echo -e "${COLOR_GREEN}[OK]${COLOR_RESET} $*" | tee -a "$DEPLOY_LOG"
-}
-
-log_warn() {
-    echo -e "${COLOR_YELLOW}[WARN]${COLOR_RESET} $*" | tee -a "$DEPLOY_LOG"
-    ((WARNINGS++))
-}
-
-log_error() {
-    echo -e "${COLOR_RED}[ERROR]${COLOR_RESET} $*" | tee -a "$DEPLOY_LOG"
-    ((ERRORS++))
-}
-
-log_header() {
-    echo ""
-    echo -e "${COLOR_BOLD}╔══════════════════════════════════════════════╗${COLOR_RESET}"
-    echo -e "${COLOR_BOLD}║  $*${COLOR_RESET}"
-    echo -e "${COLOR_BOLD}╚══════════════════════════════════════════════╝${COLOR_RESET}"
-    echo ""
-}
-
-run_cmd() {
-    local desc="$1"
-    shift
-    echo -e "  → ${desc}..." | tee -a "$DEPLOY_LOG"
-    if "$@" 2>&1 | tee -a "$DEPLOY_LOG"; then
-        log_ok "${desc}"
-        return 0
-    else
-        log_error "${desc}"
-        return 1
-    fi
-}
+# ─── Source library ───────────────────────────────────────────
+source "$SCRIPT_DIR/deploy-lib.sh"
 
 # ═══════════════════════════════════════════════════════════════
 # STAGE 1: Pre-flight Checks & Time Synchronization
@@ -75,14 +37,12 @@ run_cmd() {
 stage_preflight() {
     log_header "Stage 1/8: Pre-flight Checks & Time Sync"
 
-    # Root check
     if [[ $EUID -ne 0 ]]; then
         log_error "This script must be run as root (use sudo)"
         return 1
     fi
     log_ok "Running as root"
 
-    # OS detection
     if [[ -f /etc/os-release ]]; then
         local os_name os_version
         os_name=$(grep -oP '^ID="?\K[^"]+' /etc/os-release 2>/dev/null || echo "unknown")
@@ -92,12 +52,10 @@ stage_preflight() {
         log_warn "Cannot detect OS (no /etc/os-release)"
     fi
 
-    # Sync time (from start.sh logic)
     log_info "Synchronizing system time..."
     if command -v ntpdate &>/dev/null; then
         ntpdate -u ntp.ubuntu.com || ntpdate -u pool.ntp.org || log_warn "ntpdate failed to sync time"
     else
-        # Try to install and run ntpdate
         if command -v apt-get &>/dev/null; then
             apt-get update -qq || true
             apt-get install -y ntpdate -qq || true
@@ -107,7 +65,6 @@ stage_preflight() {
         fi
     fi
     log_ok "System time: $(date)"
-
     return 0
 }
 
@@ -120,7 +77,6 @@ stage_install_deps() {
     local install_cmd=""
     local packages=(usbguard whiptail util-linux gawk systemd coreutils tar gzip dos2unix)
 
-    # Detect package manager
     if command -v apt-get &>/dev/null; then
         install_cmd="apt-get install -y"
     elif command -v dnf &>/dev/null; then
@@ -132,7 +88,6 @@ stage_install_deps() {
         return 0
     fi
 
-    # Build missing package list
     local install_list=()
     for pkg in "${packages[@]}"; do
         if ! command -v "$pkg" &>/dev/null; then
@@ -140,7 +95,6 @@ stage_install_deps() {
         fi
     done
 
-    # Special check for usbguard via packaging system
     if ! command -v usbguard &>/dev/null; then
         if ! dpkg -l usbguard 2>/dev/null | grep -q '^ii' && ! rpm -q usbguard 2>/dev/null; then
             install_list+=("usbguard")
@@ -159,7 +113,6 @@ stage_install_deps() {
     else
         log_ok "All required packages are already installed"
     fi
-
     return 0
 }
 
@@ -169,7 +122,6 @@ stage_install_deps() {
 stage_directories_and_groups() {
     log_header "Stage 3/8: Directory & Group Setup"
 
-    # Create usbadmins group
     if ! getent group usbadmins >/dev/null; then
         groupadd usbadmins
         log_ok "Created usbadmins group"
@@ -177,7 +129,6 @@ stage_directories_and_groups() {
         log_ok "Group usbadmins already exists"
     fi
 
-    # Add active user (non-root) to usbadmins group
     local active_user="${SUDO_USER:-}"
     if [[ -n "$active_user" && "$active_user" != "root" ]]; then
         usermod -aG usbadmins "$active_user"
@@ -186,7 +137,6 @@ stage_directories_and_groups() {
         log_warn "Could not determine non-root SUDO_USER. Group membership must be verified manually."
     fi
 
-    # Create directory structure
     local dirs=(
         "/etc/usbguard/rules.d"
         "/etc/usbguard/scripts/lib"
@@ -194,7 +144,6 @@ stage_directories_and_groups() {
         "/var/lib/usbguard-manager"
         "/var/lock"
     )
-
     for dir in "${dirs[@]}"; do
         if mkdir -p "$dir" 2>/dev/null; then
             log_ok "Directory exists/created: $dir"
@@ -203,7 +152,10 @@ stage_directories_and_groups() {
         fi
     done
 
-    # Create initial state file for time-guards
+    chown root:root /etc/usbguard/rules.d
+    chmod 700 /etc/usbguard/rules.d
+    log_ok "Set secure permissions (700) on /etc/usbguard/rules.d"
+
     if [[ ! -f "/var/lib/usbguard-manager/last_run_epoch" ]]; then
         date +%s > /var/lib/usbguard-manager/last_run_epoch 2>/dev/null || true
     fi
@@ -218,12 +170,10 @@ stage_directories_and_groups() {
 stage_deploy_files() {
     log_header "Stage 4/8: Deploying Configurations & Scripts"
 
-    # 1. Write secure Daemon Configuration to BOTH files (standard + daemon configs)
-    # This prevents any confusion about which file is loaded by the service.
-    log_info "Writing USBGuard Daemon Config (RuleDirectory, usbadmins group IPC)..."
-    
+    # 1. Write secure Daemon Configuration
+    log_info "Writing USBGuard Daemon Config (RuleFolder, usbadmins group IPC)..."
     local daemon_conf_content
-    daemon_conf_content="RuleDirectory=/etc/usbguard/rules.d
+    daemon_conf_content="RuleFolder=/etc/usbguard/rules.d
 ImplicitPolicyTarget=block
 PresentDevicePolicy=apply-policy
 InsertedDevicePolicy=apply-policy
@@ -237,7 +187,6 @@ HidePII=false"
 
     echo "$daemon_conf_content" > /etc/usbguard/usbguard.conf
     echo "$daemon_conf_content" > /etc/usbguard/usbguard-daemon.conf
-    
     chmod 600 /etc/usbguard/usbguard.conf /etc/usbguard/usbguard-daemon.conf
     chown root:root /etc/usbguard/usbguard.conf /etc/usbguard/usbguard-daemon.conf
     log_ok "Daemon configuration applied to standard paths with strict 600 permissions"
@@ -248,7 +197,7 @@ HidePII=false"
     chmod 640 "/etc/usbguard/approval-manager.conf"
     chown root:root "/etc/usbguard/approval-manager.conf"
 
-    # 3. Copy base rules (non-destructive for system rules)
+    # 3. Copy base rules
     for rule_file in 50-permanent.rules 90-temporary.rules; do
         run_cmd "Copy ${rule_file}" \
             cp "$SCRIPT_DIR/rules.d/${rule_file}" "/etc/usbguard/rules.d/${rule_file}"
@@ -263,7 +212,8 @@ HidePII=false"
     chown root:root /etc/usbguard/scripts/lib/*.sh
 
     # 5. Copy main workflow scripts
-    local main_scripts=(usb-approve.sh cleanup-expired.sh backup-rules.sh restore-rules.sh)
+    local main_scripts=(usb-approve.sh cleanup-expired.sh backup-rules.sh restore-rules.sh \
+                        export-rules.sh import-rules.sh usbguard-status.sh check-config.sh)
     for script in "${main_scripts[@]}"; do
         run_cmd "Copy ${script}" \
             cp "$SCRIPT_DIR/scripts/${script}" "/etc/usbguard/scripts/${script}"
@@ -271,7 +221,7 @@ HidePII=false"
         chown root:root "/etc/usbguard/scripts/${script}"
     done
 
-    # Sanitize CRLF line endings (dos2unix) on all copied scripts/libs to prevent VM/Docker parse failures
+    # Sanitize CRLF
     log_info "Running dos2unix on all scripts and configs..."
     dos2unix /etc/usbguard/scripts/*.sh /etc/usbguard/scripts/lib/*.sh /etc/usbguard/*.conf /etc/usbguard/rules.d/*.rules 2>/dev/null || true
 
@@ -280,15 +230,13 @@ HidePII=false"
         cp "$SCRIPT_DIR/logrotate/usbguard-approval" "/etc/logrotate.d/usbguard-approval"
     chmod 644 /etc/logrotate.d/usbguard-approval 2>/dev/null || true
 
-    # 7. Sudoers Configuration (fixed formatting, dos2unix sanitized, no asterisk)
+    # 7. Sudoers Configuration
     if [[ -f "$SCRIPT_DIR/sudoers/usbguard-approval" ]]; then
         run_cmd "Copy sudoers config" \
             cp "$SCRIPT_DIR/sudoers/usbguard-approval" "/etc/sudoers.d/usbguard-approval"
         dos2unix "/etc/sudoers.d/usbguard-approval" 2>/dev/null || true
         chmod 440 "/etc/sudoers.d/usbguard-approval"
         chown root:root "/etc/sudoers.d/usbguard-approval"
-        
-        # Verify sudoers syntax via visudo
         if visudo -c >/dev/null 2>&1; then
             log_ok "Sudoers config verified (visudo OK)"
         else
@@ -296,6 +244,14 @@ HidePII=false"
             rm -f "/etc/sudoers.d/usbguard-approval"
             return 1
         fi
+    fi
+
+    # 8. Copy Web Systemd Service
+    if [[ -f "$SCRIPT_DIR/systemd/usbguard-web.service" ]]; then
+        run_cmd "Copy Web service file" \
+            cp "$SCRIPT_DIR/systemd/usbguard-web.service" "/etc/systemd/system/usbguard-web.service"
+        chmod 644 "/etc/systemd/system/usbguard-web.service"
+        chown root:root "/etc/systemd/system/usbguard-web.service"
     fi
 
     return 0
@@ -309,7 +265,6 @@ stage_generate_policy() {
 
     local system_rules="/etc/usbguard/rules.d/00-system.rules"
 
-    # Skip if policy already exists and has actual content
     if [[ -f "$system_rules" ]] && [[ -s "$system_rules" ]]; then
         if grep -qE '^[[:space:]]*allow' "$system_rules" 2>/dev/null; then
             log_ok "Safe system policy already exists with allow rules"
@@ -317,10 +272,9 @@ stage_generate_policy() {
         fi
     fi
 
-    log_info "Generating system policy using usbguard (this allows currently connected input devices)..."
+    log_info "Generating system policy using usbguard..."
     log_info "IMPORTANT: Ensure keyboard and mouse are plugged in!"
 
-    # We try to use the CLI first. If it fails (e.g. daemon not installed/working yet), write safe fallbacks.
     if usbguard generate-policy 2>/dev/null | grep -E '^[[:space:]]*allow' > "$system_rules" 2>/dev/null; then
         if [[ -s "$system_rules" ]]; then
             log_ok "Safe policy generated from system hardware state: $(wc -l < "$system_rules") rules allowed"
@@ -359,15 +313,11 @@ EOF
 stage_services() {
     log_header "Stage 6/8: Activating Services"
 
-    # Start and Enable USBGuard
     run_cmd "Enable usbguard daemon" systemctl enable usbguard
     run_cmd "Start usbguard daemon" systemctl start usbguard
-    
-    # Reload daemon rules via SIGHUP (fixed for version 1.1.2 compatibility)
     pkill -HUP usbguard-daemon 2>/dev/null || true
     sleep 1
 
-    # Verify daemon is running
     if systemctl is-active --quiet usbguard 2>/dev/null; then
         log_ok "USBGuard daemon is active and running"
     else
@@ -376,12 +326,11 @@ stage_services() {
         return 1
     fi
 
-    # Deploy Systemd Timer files (TTL Reaper)
+    # TTL Reaper
     run_cmd "Copy TTL Reaper service file" \
         cp "$SCRIPT_DIR/systemd/usbguard-ttl-reaper.service" "/etc/systemd/system/usbguard-ttl-reaper.service"
     run_cmd "Copy TTL Reaper timer file" \
         cp "$SCRIPT_DIR/systemd/usbguard-ttl-reaper.timer" "/etc/systemd/system/usbguard-ttl-reaper.timer"
-
     run_cmd "Reload systemd configuration" systemctl daemon-reload
     run_cmd "Enable TTL Reaper timer" systemctl enable usbguard-ttl-reaper.timer
     run_cmd "Start TTL Reaper timer" systemctl start usbguard-ttl-reaper.timer
@@ -390,6 +339,17 @@ stage_services() {
         log_ok "TTL Reaper timer is active and running"
     else
         log_warn "TTL Reaper timer failed to start"
+    fi
+
+    # Web Service
+    if [[ -f "/etc/systemd/system/usbguard-web.service" ]]; then
+        run_cmd "Enable Web service" systemctl enable usbguard-web.service || true
+        run_cmd "Start Web service" systemctl start usbguard-web.service || true
+        if systemctl is-active --quiet usbguard-web.service 2>/dev/null; then
+            log_ok "Web service is active and running"
+        else
+            log_warn "Web service failed to start"
+        fi
     fi
 
     return 0
@@ -402,21 +362,13 @@ stage_validation() {
     log_header "Stage 7/8: System Integrity Validation"
 
     local val_errors=0
-
-    # 1. Critical files checks
     local critical_files=(
-        "/etc/usbguard/usbguard.conf"
-        "/etc/usbguard/approval-manager.conf"
-        "/etc/usbguard/scripts/usb-approve.sh"
-        "/etc/usbguard/scripts/cleanup-expired.sh"
-        "/etc/usbguard/scripts/backup-rules.sh"
-        "/etc/usbguard/scripts/restore-rules.sh"
-        "/etc/usbguard/scripts/lib/config-reader.sh"
-        "/etc/usbguard/scripts/lib/logger.sh"
-        "/etc/usbguard/scripts/lib/lock.sh"
-        "/etc/usbguard/scripts/lib/validators.sh"
-        "/etc/usbguard/rules.d/00-system.rules"
-        "/etc/usbguard/rules.d/50-permanent.rules"
+        "/etc/usbguard/usbguard.conf" "/etc/usbguard/approval-manager.conf"
+        "/etc/usbguard/scripts/usb-approve.sh" "/etc/usbguard/scripts/cleanup-expired.sh"
+        "/etc/usbguard/scripts/backup-rules.sh" "/etc/usbguard/scripts/restore-rules.sh"
+        "/etc/usbguard/scripts/lib/config-reader.sh" "/etc/usbguard/scripts/lib/logger.sh"
+        "/etc/usbguard/scripts/lib/lock.sh" "/etc/usbguard/scripts/lib/validators.sh"
+        "/etc/usbguard/rules.d/00-system.rules" "/etc/usbguard/rules.d/50-permanent.rules"
         "/etc/usbguard/rules.d/90-temporary.rules"
     )
 
@@ -429,7 +381,6 @@ stage_validation() {
         fi
     done
 
-    # 2. Permissions check
     local scripts=(/etc/usbguard/scripts/*.sh)
     for script in "${scripts[@]}"; do
         if [[ -f "$script" ]]; then
@@ -454,18 +405,17 @@ stage_validation() {
             else
                 log_warn "Invalid permissions ($perms) on rules file: $rule - fixing..."
                 chmod 600 "$rule"
+                chown root:root "$rule"
             fi
         fi
     done
 
-    # 3. Daemon IPC check
     if usbguard list-devices >/dev/null 2>&1; then
         log_ok "USBGuard IPC channel responding (IPC OK)"
     else
-        log_warn "IPC channel did not respond to standard user request (expected if running as non-root before logout/login)"
+        log_warn "IPC channel did not respond to standard user request"
     fi
 
-    # 4. Log file setup
     local log_file="/var/log/usbguard-approval.log"
     if [[ ! -f "$log_file" ]]; then
         touch "$log_file" 2>/dev/null || true
@@ -473,9 +423,9 @@ stage_validation() {
     if [[ -f "$log_file" ]]; then
         chmod 660 "$log_file" 2>/dev/null || true
         chown root:usbadmins "$log_file" 2>/dev/null || true
-        log_ok "Audit log file prepared with usbadmins write permission: $log_file"
+        log_ok "Audit log file prepared"
     else
-        log_warn "Failed to prepare audit log file: $log_file"
+        log_warn "Failed to prepare audit log file"
     fi
 
     return $val_errors
@@ -493,18 +443,13 @@ stage_summary() {
         echo -e "${COLOR_GREEN}${COLOR_BOLD}  ✅ DEPLOYMENT COMPLETED SUCCESSFULLY!${COLOR_RESET}"
         echo -e "     Warnings: ${WARNINGS}  Errors: ${ERRORS}"
         echo ""
-        echo -e "  ${COLOR_CYAN}How to run TUI and test your USB device:${COLOR_RESET}"
-        echo -e "  1. Plug in your USB device (it will be blocked by default)."
-        echo -e "  2. Run the interactive approval tool in your terminal:"
-        echo -e "     ${COLOR_BOLD}sudo /etc/usbguard/scripts/usb-approve.sh${COLOR_RESET}"
-        echo -e "  3. Select the blocked USB drive in the checklist (spacebar to check, enter to select)."
-        echo -e "  4. Select \"T\" (Temporary) or \"P\" (Permanent) option."
-        echo -e "  5. The device will be written to the rules file and authorized immediately!"
-        echo -e "  6. Check audit log progress in real-time:"
-        echo -e "     ${COLOR_BOLD}tail -f /var/log/usbguard-approval.log${COLOR_RESET}"
+        echo -e "  ${COLOR_CYAN}How to run:${COLOR_RESET}"
+        echo -e "  ${COLOR_BOLD}sudo /etc/usbguard/scripts/usb-approve.sh${COLOR_RESET}"
+        echo ""
+        echo -e "  ${COLOR_CYAN}Uninstall:${COLOR_RESET} ${COLOR_BOLD}sudo ./deploy-uninstall.sh${COLOR_RESET}"
     else
         echo -e "${COLOR_RED}${COLOR_BOLD}  ❌ DEPLOYMENT COMPLETED WITH ${ERRORS} ERROR(S)${COLOR_RESET}"
-        echo -e "     Please inspect the log file: ${COLOR_BOLD}${DEPLOY_LOG}${COLOR_RESET}"
+        echo -e "     Please inspect: ${COLOR_BOLD}${DEPLOY_LOG}${COLOR_RESET}"
     fi
     echo -e "${COLOR_BOLD}════════════════════════════════════════════════════════════${COLOR_RESET}"
     echo ""
@@ -521,41 +466,21 @@ main() {
     echo -e "${COLOR_BOLD}╚══════════════════════════════════════════════╝${COLOR_RESET}"
     echo ""
     echo "Writing deploy logs to: $DEPLOY_LOG"
+    echo ""
+    echo -e "${COLOR_CYAN}Tip:${COLOR_RESET} To uninstall, run: ${COLOR_BOLD}sudo bash deploy-uninstall.sh${COLOR_RESET}"
+    echo ""
 
-    stage_preflight || {
-        log_error "Stage 1 (Pre-flight checks) failed. Aborting deployment."
-        exit 1
-    }
-
-    stage_install_deps || {
-        log_error "Stage 2 (Dependency installation) failed. Aborting deployment."
-        exit 1
-    }
-
-    stage_directories_and_groups || {
-        log_error "Stage 3 (Directory and group setup) failed. Aborting deployment."
-        exit 1
-    }
-
-    stage_deploy_files || {
-        log_error "Stage 4 (Configurations and scripts copying) failed. Aborting deployment."
-        exit 1
-    }
-
-    stage_generate_policy || {
-        log_warn "Stage 5 (Base policy generation) had warnings."
-    }
-
-    stage_services || {
-        log_error "Stage 6 (Services activation) failed. Aborting deployment."
-        exit 1
-    }
+    stage_preflight || { log_error "Stage 1 failed. Aborting."; exit 1; }
+    stage_install_deps || { log_error "Stage 2 failed. Aborting."; exit 1; }
+    stage_directories_and_groups || { log_error "Stage 3 failed. Aborting."; exit 1; }
+    stage_deploy_files || { log_error "Stage 4 failed. Aborting."; exit 1; }
+    stage_generate_policy || { log_warn "Stage 5 had warnings."; }
+    stage_services || { log_error "Stage 6 failed. Aborting."; exit 1; }
 
     local val_res=0
     stage_validation || val_res=$?
-
     if [[ $val_res -ne 0 ]]; then
-        log_error "Stage 7 (Integrity validation) found critical issues."
+        log_error "Stage 7 found critical issues."
     fi
 
     stage_summary

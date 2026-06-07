@@ -18,7 +18,6 @@ function reloadData() {
     fetchStatus();
     fetchDevices();
     fetchRules();
-    fetchLogs();
 }
 
 // ─── System Status ──────────────────────────────────────────────
@@ -108,7 +107,6 @@ function renderDevicesList() {
                         <h4>${dev.name || 'Generic USB Device'}</h4>
                         <div class="device-sub">
                             <span><i class="fa-solid fa-tag"></i> ID: ${dev.id}</span>
-                            <span><i class="fa-solid fa-circle-info"></i> Port: ${dev.port}</span>
                             <span><span class="badge ${badgeClass}">${dev.status}</span></span>
                         </div>
                     </div>
@@ -205,7 +203,6 @@ function renderRulesList() {
                                 <h4 style="font-size: 0.95rem;">${rule.name || 'System Authorization Block'} ${fingerprintIndicator}</h4>
                                 <div class="device-sub">
                                     <span><i class="fa-solid fa-microchip"></i> ID: ${rule.id || 'system'}</span>
-                                    <span><i class="fa-solid fa-file-code"></i> File: ${rule.filename}</span>
                                     ${expiryHTML}
                                 </div>
                             </div>
@@ -271,32 +268,7 @@ function switchTab(tabName, el) {
     renderRulesList();
 }
 
-// ─── Logs ───────────────────────────────────────────────────────
-function fetchLogs() {
-    fetch('/api/logs')
-        .then(res => res.json())
-        .then(data => {
-            const logsContainer = document.getElementById('console-logs');
-            if (data.error) {
-                logsContainer.innerHTML = `<div class="console-line" style="color:var(--danger)">Error: ${data.error}</div>`;
-                return;
-            }
-            logsContainer.innerHTML = '';
-            data.logs.forEach(log => {
-                let color = '#10b981';
-                if (log.includes('[ERROR]') || log.includes('[CRITICAL]')) {
-                    color = '#ef4444';
-                } else if (log.includes('[WARN]')) {
-                    color = '#f59e0b';
-                } else if (log.includes('[AUDIT]')) {
-                    color = '#06b6d4';
-                }
-                logsContainer.innerHTML += `<div class="console-line" style="color: ${color}">${log}</div>`;
-            });
-            logsContainer.scrollTop = logsContainer.scrollHeight;
-        })
-        .catch(err => console.error("Error fetching logs:", err));
-}
+
 
 // ─── Inspector / Drawer ────────────────────────────────────────
 function openInspector(deviceVidPid, mode, deviceId) {

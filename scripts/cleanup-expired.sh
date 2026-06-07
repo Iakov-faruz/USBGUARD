@@ -226,142 +226,91 @@ main() {
 
     if [[ ! -f "$RULES_TEMPORARY" ]]; then
         log_info "CLEANUP" "Temporary rules file does not exist: $RULES_TEMPORARY"
-        exit_code=0
-        log_session_summary "CLEANUP" "No temp rules file" "$exit_code" 0
-        release_lock
-        exit "$exit_code"
-    fi
+        exit_code=    TMP_FILE=""
 
-    # Create temp file
-    TMP_FILE=$(mktemp -t usbguard_cleanup_XXXXXX 2>/dev/null) || {
-        log_error "CLEANUP" "Cannot create temp file"
-        exit_code=1
-        release_lock
-        log_session_summary "CLEANUP" "Failed (temp file)" "$exit_code" 0
-        exit "$exit_code"
-    }
-
-    # Create temp file for AWK stderr (captures EXPIRED_COUNT)
-    AWK_STDERR=$(mktemp -t usbguard_awk_stderr_XXXXXX 2>/dev/null) || {
-        log_error "CLEANUP" "Cannot create temp file for AWK stderr"
-        exit_code=1
-        release_lock
-        log_session_summary "CLEANUP" "Failed (awk stderr temp)" "$exit_code" 0
-        exit "$exit_code"
-    }
-
-    # Run AWK state machine, capturing stderr separately
-    _awk_ttl_filter "$now" "$RULES_TEMPORARY" > "$TMP_FILE" 2>"$AWK_STDERR"
-
-    # ── STAGE 4: Diff Check ─────────────────────────────────────
-    log_info "CLEANUP" "Stage 4/7: Diff check"
-
-    if cmp -s "$RULES_TEMPORARY" "$TMP_FILE" 2>/dev/null; then
-        log_info "CLEANUP" "No expired rules found - nothing to clean"
-        _cleanup_temp
-        write_last_run_epoch "$(get_epoch_now)" "$STATE_FILE" 2>/dev/null || true
-        release_lock
-        log_session_summary "CLEANUP" "No expired rules" 0 0
-        exit 0
-    fi
-
-    # ── STAGE 5: Backup temporary rules only ────────────────────
-    log_info "CLEANUP" "Stage 5/7: Creating backup of temporary rules"
-
-    BACKUP_FILE=$(create_backup "$BACKUP_DIR" "$(dirname "$RULES_TEMPORARY")" "$BACKUP_KEEP") || {
-        log_warn "CLEANUP" "Backup failed - continuing without backup"
-    }
-
-    # ── STAGE 6: Atomic Replace ─────────────────────────────────
-    log_info "CLEANUP" "Stage 6/7: Atomic replace"
-
-    chmod 600 "$TMP_FILE" 2>/dev/null
-
-    if ! mv "$TMP_FILE" "$RULES_TEMPORARY" 2>/dev/null; then
-        log_error "CLEANUP" "Failed to replace temporary rules file"
-        exit_code=1
-        release_lock
-        log_session_summary "CLEANUP" "Failed (replace)" "$exit_code" 0
-        exit "$exit_code"
-    fi
-    TMP_FILE=""
-
-#     # ── STAGE 7: Reload Daemon ──────────────────────────────────
-#     log_info "CLEANUP" "Stage 7/7: Reloading usbguard daemon"
-
-#     if ! usbguard reload-rules 2>/dev/null; then
-#         log_error "CLEANUP" "Failed to reload usbguard rules - attempting point rollback"
-
-#         # POINT ROLLBACK: restore only 90-temporary.rules from backup
-#         # (NOT full restore_latest_backup which may restore already-expired rules)
-#         if [[ -n "$BACKUP_FILE" ]] && [[ -f "$BACKUP_FILE" ]]; then
-#             log_info "CLEANUP" "Point rollback from: $BACKUP_FILE"
-#             local point_restore_dir
-#             point_restore_dir=$(mktemp -d -t usbguard_point_rollback_XXXXXX 2>/dev/null)
-#             if tar -xzf "$BACKUP_FILE" -C "$point_restore_dir" 2>/dev/null; then
-#                 local extracted_temp
-#                 extracted_temp=$(find "$point_restore_dir" -type f -name "$(basename "$RULES_TEMPORARY")" | head -n 1)
-#                 if [[ -f "$extracted_temp" ]]; then
-#                     cp -f "$extracted_temp" "$RULES_TEMPORARY" 2>/dev/null
-#                     usbguard reload-rules 2>/dev/null || {
-#                         log_critical "CLEANUP" "Point rollback reload also failed!"
-#                         rm -rf "$point_restore_dir" 2>/dev/null
-#                         rm -f "$AWK_STDERR" 2>/dev/null
-#                         exit_code=2
-#                         release_lock
-#                         log_session_summary "CLEANUP" "CRITICAL: point rollback failed" "$exit_code" 0
-#                         exit "$exit_code"
-#                     }
-#                     log_info "CLEANUP" "Point rollback successful"
-#                 else
-#                     log_critical "CLEANUP" "Cannot find temp rules in backup for point rollback"
-#                 fi
-#             fi
-#             rm -rf "$point_restore_dir" 2>/dev/null
-#         else
-#             log_critical "CLEANUP" "No backup available for point rollback!"
-#         fi
-
-#         rm -f "$AWK_STDERR" 2>/dev/null
-#         exit_code=1
-#         release_lock
-#         log_session_summary "CLEANUP" "Failed (reload)" "$exit_code" 0
-#         exit "$exit_code"
-#     fi
-
-#     # ── Success ─────────────────────────────────────────────────
-#     expired_count=$(grep -oP 'EXPIRED_COUNT=\K[0-9]+' "$AWK_STDERR" 2>/dev/null || echo 0)
-#     rm -f "$AWK_STDERR" 2>/dev/null
-
-#     write_last_run_epoch "$(get_epoch_now)" "$STATE_FILE" 2>/dev/null || true
-#     release_lock
-
-#     end_time=$(date +%s 2>/dev/null || echo 0)
-#     duration=$((end_time - start_time))
-
-#     log_audit "CLEANUP" "Cleaned ${expired_count:-0} expired temporary rule(s)"
-#     log_session_summary "CLEANUP" "Cleaned ${expired_count:-0} rules" 0 "$duration"
-#     exit 0
-# }
-
-    # ── STAGE 7: Reload Daemon (Fixed for USBGuard 1.1.2) ────────────────
-    # USBGuard 1.1.2 אינו תומך ב־`usbguard reload-rules`
-    # ולכן אנו משתמשים ב־SIGHUP כדי לטעון מחדש את החוקים.
-    # אם הדמון עדיין רץ לאחר HUP – נחשב כהצלחה.
-
+    # ── STAGE 7: Reload Daemon ──────────────────────────────────────────
+    # USBGuard 1.1.2 does not support \`usbguard reload-rules\`.
+    # Primary: systemctl reload (sends SIGHUP internally and verifies via unit state).
+    # Fallback: direct SIGHUP + systemctl is-active verification.
     log_info "CLEANUP" "Stage 7/7: Reloading usbguard daemon"
 
-    # שולח SIGHUP לדמון (במקום reload-rules)
-    pkill -HUP usbguard-daemon 2>/dev/null || true
-    sleep 1
+    _reload_daemon_verified() {
+        if systemctl reload usbguard 2>/dev/null; then
+            return 0
+        fi
+        pkill -HUP usbguard-daemon 2>/dev/null || true
+        sleep 1
+        systemctl is-active --quiet usbguard 2>/dev/null
+    }
 
-    # בדיקה האם הדמון עדיין חי → סימן שה־HUP התקבל והחוקים נטענו מחדש
-    if pgrep usbguard-daemon >/dev/null; then
-        log_info "CLEANUP" "Rules reloaded successfully via HUP signal"
+    if _reload_daemon_verified; then
+        log_info "CLEANUP" "Rules reloaded successfully"
     else
         log_error "CLEANUP" "Failed to reload usbguard rules - attempting point rollback"
 
         # ── POINT ROLLBACK ───────────────────────────────────────────────
+        # Restore only 90-temporary.rules from the latest backup
+        # (NOT a full restore, which may re-introduce already-expired rules)
+        if [[ -n "$BACKUP_FILE" ]] && [[ -f "$BACKUP_FILE" ]]; then
+            log_info "CLEANUP" "Point rollback from: $BACKUP_FILE"
+
+            local point_restore_dir
+            # Use /var/tmp so it survives PrivateTmp=true in systemd
+            point_restore_dir=$(mktemp -d /var/tmp/usbguard_point_rollback_XXXXXX 2>/dev/null)
+
+            if tar -xzf "$BACKUP_FILE" -C "$point_restore_dir" 2>/dev/null; then
+                local extracted_temp
+                extracted_temp=$(find "$point_restore_dir" -type f \
+                    -name "$(basename "$RULES_TEMPORARY")" | head -n 1)
+
+                if [[ -f "$extracted_temp" ]]; then
+                    cp -f "$extracted_temp" "$RULES_TEMPORARY" 2>/dev/null
+                    chmod 600 "$RULES_TEMPORARY" 2>/dev/null
+                    chown root:root "$RULES_TEMPORARY" 2>/dev/null
+
+                    # Retry reload after restoring
+                    if ! _reload_daemon_verified; then
+                        log_critical "CLEANUP" "Point rollback reload also failed!"
+                        rm -rf "$point_restore_dir" 2>/dev/null
+                        rm -f "$AWK_STDERR" 2>/dev/null
+                        exit_code=2
+                        release_lock
+                        log_session_summary "CLEANUP" "CRITICAL: point rollback failed" "$exit_code" 0
+                        exit "$exit_code"
+                    fi
+
+                    log_info "CLEANUP" "Point rollback successful"
+                else
+                    log_critical "CLEANUP" "Cannot find temp rules in backup for point rollback"
+                fi
+            fi
+
+            rm -rf "$point_restore_dir" 2>/dev/null
+        else
+            log_critical "CLEANUP" "No backup available for point rollback!"
+        fi
+
+        rm -f "$AWK_STDERR" 2>/dev/null
+        exit_code=1
+        release_lock
+        log_session_summary "CLEANUP" "Failed (reload)" "$exit_code" 0
+        exit "$exit_code"
+    fi
+
+    # ── Success ──────────────────────────────────────────────────────────
+    expired_count=$(grep -oP 'EXPIRED_COUNT=\K[0-9]+' "$AWK_STDERR" 2>/dev/null || echo 0)
+    rm -f "$AWK_STDERR" 2>/dev/null
+
+    write_last_run_epoch "$(get_epoch_now)" "$STATE_FILE" 2>/dev/null || true
+    release_lock
+
+    end_time=$(date +%s 2>/dev/null || echo 0)
+    duration=$((end_time - start_time))
+
+    log_audit "CLEANUP" "Cleaned ${expired_count:-0} expired temporary rule(s)"
+    log_session_summary "CLEANUP" "Cleaned ${expired_count:-0} rules" 0 "$duration"
+    exit 0
+}� POINT ROLLBACK ───────────────────────────────────────────────
         # משחזרים רק את 90-temporary.rules מהגיבוי האחרון
         # כדי לא לשחזר חוקים שפג תוקפם.
         if [[ -n "$BACKUP_FILE" ]] && [[ -f "$BACKUP_FILE" ]]; then

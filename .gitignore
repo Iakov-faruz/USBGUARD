@@ -1,41 +1,65 @@
-# Python cache
+# ============================
+#   USBGUARD – Git Ignore
+# ============================
+
+# --- Python cache ---
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
 
-# Virtual environments
+# --- Virtual environments ---
 venv/
 env/
 .venv/
+web/venv/
 
-# Flask instance folder
+# --- Flask instance folder ---
 instance/
 
-# Python build artifacts
+# --- Python build artifacts ---
 *.egg-info/
 *.dist-info/
 build/
 dist/
 
-# Pip / site-packages (inside venv)
+# --- Pip / site-packages (inside venv) ---
 site-packages/
 
-# Logs
+# --- Logs ---
 *.log
 log/
 logs/
 
-# System files
+# --- System files ---
 .DS_Store
 Thumbs.db
 Desktop.ini
 
-# IDE
+# --- IDE / Editor ---
 .vscode/
 .idea/
 
-# Backup files
+# --- Backup / temp files ---
 *.bak
 *.swp
 *.tmp
+*.orig
+
+# --- Node/Web (if added later) ---
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# --- Web cache ---
+web/**/__pycache__/
+web/static/**/__pycache__/
+web/templates/**/__pycache__/
+
+# --- Compiled assets (if generated) ---
+web/static/js/*.map
+web/static/css/*.map
+
+# --- Git internal safety ---
+*.rej
+*.patch

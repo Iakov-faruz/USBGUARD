@@ -157,16 +157,16 @@ def get_status():
     timer_active = (rc_timer == 0)
 
     rules_count = 0
-    if os.path.exists(RULES_DIR):
-        for f in os.listdir(RULES_DIR):
-            if f.endswith('.rules'):
-                try:
-                    with open(os.path.join(RULES_DIR, f), 'r') as file:
-                        for line in file:
-                            if line.strip().startswith('allow'):
-                                rules_count += 1
-                except:
-                    pass
+    stdout, _, rc = run_command(["sudo", "/etc/usbguard/scripts/usb-approve.sh", "--list-rules"])
+    if rc == 0:
+        try:
+            data = json.loads(stdout)
+            for cat in ["system", "permanent", "temporary"]:
+                for line in data.get(cat, []):
+                    if line.strip().startswith('allow'):
+                        rules_count += 1
+        except:
+            pass
 
     return jsonify({
         "daemon_active": daemon_active,
@@ -401,99 +401,99 @@ def _get_verdict_message(match_pct, mismatches):
 @app.route('/api/rules', methods=['GET'])
 def get_rules():
     """Retrieve all parsed active rules from 00-system, 50-permanent, and 90-temporary."""
-    rules = []
-    
-    if not os.path.exists(RULES_DIR):
+    stdout, stderr, rc = run_command(["sudo", "/etc/usbguard/scripts/usb-approve.sh", "--list-rules"])
+    if rc != 0:
         return jsonify([])
 
-    for filename in sorted(os.listdir(RULES_DIR)):
-        if not filename.endswith('.rules'):
-            continue
-        
-        filepath = os.path.join(RULES_DIR, filename)
-        category = "System" if "00-system" in filename else ("Permanent" if "50-permanent" in filename else "Temporary")
-        
-        try:
-            with open(filepath, 'r') as file:
-                content = file.read()
-                lines = content.split('\n')
+    try:
+        data = json.loads(stdout)
+    except Exception as e:
+        return jsonify([])
+
+    rules = []
+    
+    categories = {
+        "system": ("System", "00-system.rules"),
+        "permanent": ("Permanent", "50-permanent.rules"),
+        "temporary": ("Temporary", "90-temporary.rules")
+    }
+
+    for cat_key, (category_name, filename) in categories.items():
+        lines = data.get(cat_key, [])
+        i = 0
+        while i < len(lines):
+            line = lines[i].strip()
+            if line.startswith('allow') or line.startswith('block'):
+                rule_text = line
+                ttl = None
+                fingerprint = None
                 
-                i = 0
-                while i < len(lines):
-                    line = lines[i].strip()
-                    if line.startswith('allow') or line.startswith('block'):
-                        rule_text = line
-                        ttl = None
-                        fingerprint = None
-                        
-                        # If temporary rule, check if next line is the ttl_epoch comment
-                        if category == "Temporary" and i + 1 < len(lines):
-                            next_line = lines[i+1].strip()
-                            if next_line.startswith("# ttl_epoch:"):
-                                ttl_val = next_line.replace("# ttl_epoch:", "").strip()
-                                if ttl_val.isdigit():
-                                    ttl = int(ttl_val)
-                        
-                        # Check for fingerprint comment (can be anywhere after the rule)
-                        for j in range(i + 1, min(i + 5, len(lines))):
-                            check_line = lines[j].strip()
-                            if check_line.startswith("# fingerprint:"):
-                                fp_str = check_line.replace("# fingerprint:", "").strip()
-                                try:
-                                    fingerprint = json.loads(fp_str)
-                                except:
-                                    pass
-                                break
-                        
-                        # Extract VID:PID
-                        vid_pid = ""
-                        vid_pid_match = re.search(r'id ([0-9a-fA-F]{4}:[0-9a-fA-F]{4})', rule_text)
-                        if vid_pid_match:
-                            vid_pid = vid_pid_match.group(1)
+                # If temporary rule, check if next line is the ttl_epoch comment
+                if cat_key == "temporary" and i + 1 < len(lines):
+                    next_line = lines[i+1].strip()
+                    if next_line.startswith("# ttl_epoch:"):
+                        ttl_val = next_line.replace("# ttl_epoch:", "").strip()
+                        if ttl_val.isdigit():
+                            ttl = int(ttl_val)
+                
+                # Check for fingerprint comment (can be anywhere after the rule)
+                for j in range(i + 1, min(i + 5, len(lines))):
+                    check_line = lines[j].strip()
+                    if check_line.startswith("# fingerprint:"):
+                        fp_str = check_line.replace("# fingerprint:", "").strip()
+                        try:
+                            fingerprint = json.loads(fp_str)
+                        except:
+                            pass
+                        break
+                
+                # Extract VID:PID
+                vid_pid = ""
+                vid_pid_match = re.search(r'id ([0-9a-fA-F]{4}:[0-9a-fA-F]{4})', rule_text)
+                if vid_pid_match:
+                    vid_pid = vid_pid_match.group(1)
 
-                        # Extract name
-                        name = "Unknown Device"
-                        name_match = re.search(r'name "([^"]*)"', rule_text)
-                        if name_match:
-                            name = name_match.group(1).strip()
+                # Extract name
+                name = "Unknown Device"
+                name_match = re.search(r'name "([^"]*)"', rule_text)
+                if name_match:
+                    name = name_match.group(1).strip()
 
-                        # Extract serial
-                        serial = "N/A"
-                        serial_match = re.search(r'serial "([^"]*)"', rule_text)
-                        if serial_match:
-                            serial = serial_match.group(1)
+                # Extract serial
+                serial = "N/A"
+                serial_match = re.search(r'serial "([^"]*)"', rule_text)
+                if serial_match:
+                    serial = serial_match.group(1)
 
-                        # Extract hash
-                        dev_hash = "N/A"
-                        hash_match = re.search(r'hash "([^"]*)"', rule_text)
-                        if hash_match:
-                            dev_hash = hash_match.group(1)
+                # Extract hash
+                dev_hash = "N/A"
+                hash_match = re.search(r'hash "([^"]*)"', rule_text)
+                if hash_match:
+                    dev_hash = hash_match.group(1)
 
-                        # Extract interfaces
-                        interfaces = "N/A"
-                        intf_match = re.search(r'with-interface \{([^}]+)\}', rule_text)
-                        if intf_match:
-                            interfaces = intf_match.group(1)
-                        else:
-                            intf_match_single = re.search(r'with-interface (\S+)', rule_text)
-                            if intf_match_single:
-                                interfaces = intf_match_single.group(1)
+                # Extract interfaces
+                interfaces = "N/A"
+                intf_match = re.search(r'with-interface \{([^}]+)\}', rule_text)
+                if intf_match:
+                    interfaces = intf_match.group(1)
+                else:
+                    intf_match_single = re.search(r'with-interface (\S+)', rule_text)
+                    if intf_match_single:
+                        interfaces = intf_match_single.group(1)
 
-                        rules.append({
-                            "rule": rule_text,
-                            "filename": filename,
-                            "category": category,
-                            "id": vid_pid,
-                            "name": name,
-                            "serial": serial,
-                            "hash": dev_hash,
-                            "interfaces": interfaces,
-                            "ttl_epoch": ttl,
-                            "fingerprint": fingerprint
-                        })
-                    i += 1
-        except Exception as e:
-            pass
+                rules.append({
+                    "rule": rule_text,
+                    "filename": filename,
+                    "category": category_name,
+                    "id": vid_pid,
+                    "name": name,
+                    "serial": serial,
+                    "hash": dev_hash,
+                    "interfaces": interfaces,
+                    "ttl_epoch": ttl,
+                    "fingerprint": fingerprint
+                })
+            i += 1
 
     return jsonify(rules)
 
