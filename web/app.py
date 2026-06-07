@@ -3,9 +3,48 @@ import subprocess
 import re
 import json
 import tempfile
+import logging
+import sys
 from flask import Flask, render_template, jsonify, request
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
+
+# ==============================================================================
+# USBGuard Approval Manager - Flask Backend (Intelligent Debug Mode)
+# Version: 2.4 - עם מצב דיבוג חכם
+# ==============================================================================
+
+# ✅ זיהוי סביבה - משתנה סביבה או ארגומנט
+DEBUG_MODE = os.environ.get('FLASK_DEBUG', 'False').lower() == 'true'
+IS_PRODUCTION = not DEBUG_MODE
+
+# ✅ הגדרת Logger מותאם לסביבה
+log_level = logging.DEBUG if DEBUG_MODE else logging.INFO
+
+logging.basicConfig(
+    level=log_level,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('/var/log/usbguard-web.log'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
+
+# Rate Limiter - מושבת בדיבוג מלא
+if DEBUG_MODE:
+    # בדיבוג - ללא הגבלות
+    limiter = Limiter(app=app, key_func=get_remote_address, enabled=False)
+    logger.warning("⚠️ RUNNING IN DEBUG MODE - Rate limiting DISABLED")
+else:
+    limiter = Limiter(
+        app=app,
+        key_func=get_remote_address,
+        default_limits=["200 per day", "50 per hour"]
+    )
+    logger.info("✅ Production mode - Rate limiting ENABLED")
 
 # Paths and Configs
 LOG_FILE = "/var/log/usbguard-approval.log"
@@ -13,14 +52,41 @@ RULES_DIR = "/etc/usbguard/rules.d"
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 
 def run_command(cmd, shell=False):
-    """Safely execute system commands and return stdout/stderr."""
+    """
+    Execute system commands with intelligent error reporting.
+    - DEBUG mode: Full error details returned to client
+    - Production: Generic errors only, details in logs
+    """
     try:
         res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, shell=shell, timeout=15)
-        return res.stdout, res.stderr, res.returncode
+        
+        # תמיד רושמים בלוג מלא
+        if res.returncode != 0 and res.stderr:
+            logger.error(f"Command failed: {' '.join(cmd) if isinstance(cmd, list) else cmd} | Error: {res.stderr.strip()}")
+        elif res.returncode == 0 and res.stdout and DEBUG_MODE:
+            logger.debug(f"Command succeeded: {' '.join(cmd) if isinstance(cmd, list) else cmd}")
+        
+        # ✅ התנהגות חכמה לפי מצב
+        if res.returncode != 0:
+            if DEBUG_MODE:
+                # בדיבוג - מחזירים את כל המידע
+                return res.stdout, res.stderr, res.returncode
+            else:
+                # בייצור - רק הודעה גנרית
+                return res.stdout, "Operation failed. Check server logs for details.", res.returncode
+        else:
+            return res.stdout, "", res.returncode
+        
     except subprocess.TimeoutExpired:
-        return "", "Command timeout", -1
+        logger.error(f"Command timed out: {' '.join(cmd) if isinstance(cmd, list) else cmd}")
+        if DEBUG_MODE:
+            return "", "Command timed out", -1
+        return "", "Operation timed out", -1
     except Exception as e:
-        return "", str(e), -1
+        logger.exception(f"Unexpected error running command: {' '.join(cmd) if isinstance(cmd, list) else cmd}")
+        if DEBUG_MODE:
+            return "", str(e), -1
+        return "", "Internal server error", -1
 
 def parse_lsusb_verbose(output):
     """Parse 'sudo lsusb -v -d VID:PID' output into structured JSON."""
@@ -71,7 +137,6 @@ def parse_lsusb_verbose(output):
             continue
         elif 'device status:' in lower:
             current_section = 'status'
-            # Try to grab status value after colon
             if ':' in stripped:
                 status_val = stripped.split(':', 1)[1].strip()
                 result["status"] = status_val
@@ -166,8 +231,8 @@ def get_status():
                 for line in data.get(cat, []):
                     if line.strip().startswith('allow'):
                         rules_count += 1
-        except:
-            pass
+        except Exception as e:
+            logger.error(f"Failed to parse rules count: {e}")
 
     return jsonify({
         "daemon_active": daemon_active,
@@ -180,7 +245,9 @@ def get_devices():
     """Retrieve list of USB devices detected by USBGuard, with deep field parsing."""
     stdout, stderr, rc = run_command(["usbguard", "list-devices"])
     if rc != 0:
-        return jsonify({"error": f"Failed to list devices: {stderr}"}), 500
+        error_msg = stderr if DEBUG_MODE else "Failed to communicate with USBGuard daemon"
+        logger.error(f"Failed to list devices: {stderr}")
+        return jsonify({"error": error_msg}), 500
 
     devices = []
     
@@ -267,7 +334,9 @@ def get_device_detail():
         # If no VID:PID given, try to list all devices first
         stdout, stderr, rc = run_command(["lsusb"])
         if rc != 0:
-            return jsonify({"error": f"lsusb failed: {stderr}"}), 500
+            error_msg = stderr if DEBUG_MODE else "Failed to list USB devices"
+            logger.error(f"lsusb failed: {stderr}")
+            return jsonify({"error": error_msg}), 500
         
         devices_raw = []
         for line in stdout.strip().split('\n'):
@@ -285,8 +354,10 @@ def get_device_detail():
     
     stdout, stderr, rc = run_command(["sudo", "lsusb", "-v", "-d", vid_pid])
     if rc != 0:
+        error_msg = stderr if DEBUG_MODE else "Failed to read device details"
+        logger.error(f"lsusb -v failed for {vid_pid}: {stderr}")
         return jsonify({
-            "error": f"lsusb -v failed for {vid_pid}: {stderr}",
+            "error": error_msg,
             "note": "Device may not be connected or needs sudo"
         }), 500
     
@@ -316,7 +387,9 @@ def verify_fingerprint():
     # Get current fingerprint
     stdout, stderr, rc = run_command(["sudo", "lsusb", "-v", "-d", vid_pid])
     if rc != 0:
-        return jsonify({"error": f"Cannot read device: {stderr}"}), 500
+        error_msg = stderr if DEBUG_MODE else "Cannot read device. Is it still connected?"
+        logger.error(f"Cannot read device for verification: {stderr}")
+        return jsonify({"error": error_msg}), 500
     
     current_fp = get_fingerprint_from_lsusb(stdout)
     
@@ -404,11 +477,13 @@ def get_rules():
     """Retrieve all parsed active rules from 00-system, 50-permanent, and 90-temporary."""
     stdout, stderr, rc = run_command(["sudo", "/etc/usbguard/scripts/usb-approve.sh", "--list-rules"])
     if rc != 0:
+        logger.error(f"Failed to get rules: {stderr}")
         return jsonify([])
 
     try:
         data = json.loads(stdout)
     except Exception as e:
+        logger.error(f"Failed to parse rules JSON: {e}")
         return jsonify([])
 
     rules = []
@@ -523,19 +598,19 @@ def approve_device():
         if fingerprint:
             _append_fingerprint_to_rule(device_id, fingerprint)
         
+        logger.info(f"Device {device_id} approved as {approval_type}")
         return jsonify({
             "success": True,
             "message": f"Successfully approved device {device_id} ({'Permanent' if approval_type == 'P' else 'Temporary'})",
-            "output": stdout
+            "output": stdout if DEBUG_MODE else None
         })
     else:
+        error_msg = stderr if DEBUG_MODE else "Failed to approve device. Check logs."
+        logger.error(f"Failed to approve device {device_id}: {stderr}")
         return jsonify({
             "success": False,
-            "error": f"Failed to approve device: {stderr or stdout}"
+            "error": error_msg
         }), 500
-
-import re
-import tempfile
 
 def _append_fingerprint_to_rule(device_id, fingerprint):
     """Append a fingerprint comment to the rule file atomically and safely."""
@@ -553,7 +628,7 @@ def _append_fingerprint_to_rule(device_id, fingerprint):
             
             modified = False
             for i, line in enumerate(lines):
-                # ✅ תיקון 1: שימוש ב-Regex עם גבולות מילה (\b) למניעת התאמה חלקית
+                # שימוש ב-Regex עם גבולות מילה (\b) למניעת התאמה חלקית
                 if re.search(rf'\ballow\s+id\s+{re.escape(rule_vid_pid)}\b', line):
                     fp_comment = f"# fingerprint: {json.dumps(fingerprint)}\n"
                     lines.insert(i + 1, fp_comment)
@@ -561,7 +636,7 @@ def _append_fingerprint_to_rule(device_id, fingerprint):
                     break
             
             if modified:
-                # ✅ תיקון 2: כתיבה אטומית (Atomic Write) למניעת Race Conditions
+                # כתיבה אטומית (Atomic Write) למניעת Race Conditions
                 dir_name = os.path.dirname(filepath)
                 fd, tmp_path = tempfile.mkstemp(dir=dir_name, prefix='.tmp_rule_')
                 try:
@@ -570,14 +645,17 @@ def _append_fingerprint_to_rule(device_id, fingerprint):
                     # הגדרת הרשאות אבטחה לפני ההחלפה
                     os.chmod(tmp_path, 0o600)
                     os.chown(tmp_path, 0, 0)  # root:root
-                    # ✅ החלפה אטומית (mv)
+                    # החלפה אטומית (mv)
                     os.replace(tmp_path, filepath)
+                    logger.info(f"Added fingerprint to rule for {rule_vid_pid}")
                     return True
-                except Exception:
+                except Exception as e:
+                    logger.error(f"Failed to write fingerprint: {e}")
                     if os.path.exists(tmp_path):
                         os.remove(tmp_path)
                     return False
-        except Exception:
+        except Exception as e:
+            logger.error(f"Failed to process {filename}: {e}")
             pass
     return False
 
@@ -600,14 +678,17 @@ def block_device():
     stdout, stderr, rc = run_command(cmd)
 
     if rc == 0:
+        logger.info(f"Blocked device: {vid_pid or device_id}")
         return jsonify({
             "success": True,
             "message": f"Successfully blocked and removed persistence for {vid_pid or 'ID: ' + str(device_id)}"
         })
     else:
+        error_msg = stderr if DEBUG_MODE else "Failed to block device. Check logs."
+        logger.error(f"Failed to block device {vid_pid or device_id}: {stderr}")
         return jsonify({
             "success": False,
-            "error": f"Failed to block device: {stderr or stdout}"
+            "error": error_msg
         }), 500
 
 @app.route('/api/change-status', methods=['POST'])
@@ -629,7 +710,9 @@ def change_status():
     _, _, rc_delete = run_command(cmd_delete)
 
     if rc_delete != 0:
-        return jsonify({"success": False, "error": "Failed to remove previous authorization rules file entries."}), 500
+        logger.error(f"Failed to remove rule for {vid_pid}")
+        error_msg = stderr if DEBUG_MODE else "Failed to remove previous authorization rules."
+        return jsonify({"success": False, "error": error_msg}), 500
 
     # If the device is currently connected and we have a Device ID, approve it with the new configuration
     if device_id:
@@ -639,12 +722,15 @@ def change_status():
 
         stdout, stderr, rc_approve = run_command(cmd_approve)
         if rc_approve == 0:
+            logger.info(f"Changed status for {vid_pid} to {new_type}")
             return jsonify({
                 "success": True,
                 "message": f"Successfully changed status of device {vid_pid} to {'Permanent' if new_type == 'P' else 'Temporary'}"
             })
         else:
-            return jsonify({"success": False, "error": f"Failed to rewrite rule: {stderr or stdout}"}), 500
+            error_msg = stderr if DEBUG_MODE else "Failed to rewrite rule. Check logs."
+            logger.error(f"Failed to change status for {vid_pid}: {stderr}")
+            return jsonify({"success": False, "error": error_msg}), 500
     else:
         return jsonify({
             "success": False,
@@ -663,7 +749,26 @@ def get_logs():
             last_lines = [line.strip() for line in lines[-50:]]
             return jsonify({"logs": last_lines})
     except Exception as e:
-        return jsonify({"error": f"Failed to read logs: {str(e)}"}), 500
+        logger.error(f"Failed to read logs: {e}")
+        if DEBUG_MODE:
+            return jsonify({"error": f"Failed to read logs: {str(e)}"}), 500
+        return jsonify({"error": "Failed to read logs"}), 500
 
 if __name__ == '__main__':
-    app.run(host='127.0.0.1', port=5000, debug=True)
+    # הצגת מצב הפעלה ברורה
+    print("=" * 60)
+    if DEBUG_MODE:
+        print("🔧 RUNNING IN DEBUG MODE - Full error details will be exposed")
+        print("⚠️  DO NOT use this in production!")
+    else:
+        print("🔒 RUNNING IN PRODUCTION MODE - Errors are sanitized")
+        print("✅ Detailed errors are written to /var/log/usbguard-web.log")
+    print("=" * 60)
+    print(f"📍 Server running on: http://127.0.0.1:5000")
+    print("=" * 60)
+    
+    app.run(
+        host='127.0.0.1', 
+        port=5000, 
+        debug=DEBUG_MODE
+    )
