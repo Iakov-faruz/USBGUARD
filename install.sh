@@ -22,6 +22,7 @@ set -euo pipefail
 
 # ─── Configuration ─────────────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MODE="install"
 DRY_RUN=false
 FORCE=false
 INSTALL_LOG="/var/log/usbguard-install.log"
@@ -39,12 +40,14 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --dry-run|-n) DRY_RUN=true; shift ;;
         --force|-f) FORCE=true; shift ;;
+        --uninstall|-u) MODE="uninstall"; shift ;;
         --help|-h)
             echo "Usage: sudo $0 [OPTIONS]"
             echo ""
             echo "Options:"
             echo "  --dry-run, -n   Show what would be done without making changes"
             echo "  --force, -f     Skip confirmation prompt"
+            echo "  --uninstall, -u Remove all USBGuard Manager components"
             echo "  --help, -h      Show this help"
             exit 0
             ;;
@@ -614,9 +617,154 @@ final_verification() {
 }
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# Uninstall
+# ═══════════════════════════════════════════════════════════════════════════════
+uninstall_usbguard() {
+    log_section "Uninstall USBGuard Manager"
+    
+    # ── Confirmation prompt ────────────────────────────────────────
+    echo ""
+    read -r -p "Are you sure you want to uninstall USBGUARD Manager? (y/N): " confirm
+    if [[ ! "$confirm" =~ ^[yY]$ ]]; then
+        echo "Uninstall cancelled."
+        exit 0
+    fi
+    echo ""
+    
+    local services=(
+        "usbguard-behavioral.service"
+        "usbguard-ttl-reaper.service"
+        "usbguard-ttl-reaper.timer"
+        "usbguard-web.service"
+    )
+    
+    # ─── Step 1: Stop and disable systemd services ─────────────────
+    log_info "Stopping and disabling systemd services..."
+    for service in "${services[@]}"; do
+        if [[ -f "/etc/systemd/system/$service" ]]; then
+            systemctl stop "$service" 2>/dev/null || true
+            systemctl disable "$service" 2>/dev/null || true
+            rm -f "/etc/systemd/system/$service"
+            log_ok "Removed: $service"
+        else
+            log_info "Service not found, skipping: $service"
+        fi
+    done
+    systemctl daemon-reload
+    log_ok "Systemd services removed and daemon reloaded"
+    
+    # ─── Step 2: Remove sudoers file ────────────────────────────────
+    log_info "Removing sudoers configuration..."
+    if [[ -f "/etc/sudoers.d/usbguard-approval" ]]; then
+        rm -f /etc/sudoers.d/usbguard-approval
+        log_ok "Removed: /etc/sudoers.d/usbguard-approval"
+    else
+        log_info "Sudoers file not found, skipping"
+    fi
+    
+    # ─── Step 3: Remove logrotate configuration ────────────────────
+    log_info "Removing logrotate configuration..."
+    if [[ -f "/etc/logrotate.d/usbguard-approval" ]]; then
+        rm -f /etc/logrotate.d/usbguard-approval
+        log_ok "Removed: /etc/logrotate.d/usbguard-approval"
+    else
+        log_info "Logrotate file not found, skipping"
+    fi
+    
+    # ─── Step 4: Remove directories and files created by install ────
+    log_info "Removing USBGuard Manager files and directories..."
+    
+    if [[ -d "/etc/usbguard" ]]; then
+        rm -rf /etc/usbguard
+        log_ok "Removed: /etc/usbguard/"
+    else
+        log_info "/etc/usbguard/ not found, skipping"
+    fi
+    
+    if [[ -d "/var/log/usbguard" ]]; then
+        rm -rf /var/log/usbguard
+        log_ok "Removed: /var/log/usbguard/"
+    else
+        log_info "/var/log/usbguard/ not found, skipping"
+    fi
+    
+    if [[ -d "/var/lib/usbguard-manager" ]]; then
+        rm -rf /var/lib/usbguard-manager
+        log_ok "Removed: /var/lib/usbguard-manager/"
+    else
+        log_info "/var/lib/usbguard-manager/ not found, skipping"
+    fi
+    
+    # Remove individual log files
+    for logf in /var/log/usbguard-approval.log /var/log/usbguard-badusb.log /var/log/usbguard-web.log; do
+        if [[ -f "$logf" ]]; then
+            rm -f "$logf"
+            log_ok "Removed: $logf"
+        fi
+    done
+    
+    # ─── Step 5: Remove usbadmins group ─────────────────────────────
+    log_info "Removing 'usbadmins' group..."
+    if getent group usbadmins >/dev/null 2>&1; then
+        # Remove all users from the group first
+        local members
+        members=$(getent group usbadmins | cut -d: -f4)
+        if [[ -n "$members" ]]; then
+            for user in $(echo "$members" | tr ',' ' '); do
+                gpasswd -d "$user" usbadmins 2>/dev/null || true
+                log_info "Removed user '$user' from usbadmins group"
+            done
+        fi
+        groupdel usbadmins 2>/dev/null || log_warn "Could not remove usbadmins group (may have other members)"
+        log_ok "Group 'usbadmins' removed"
+    else
+        log_info "Group 'usbadmins' not found, skipping"
+    fi
+    
+    # ─── Step 6: Create minimal usbguard.conf (optional) ────────────
+    if command -v usbguard &>/dev/null; then
+        log_info "Creating minimal USBGuard configuration..."
+        mkdir -p /etc/usbguard/rules.d
+        cat > /etc/usbguard/usbguard.conf << 'EOF'
+RuleFolder=/etc/usbguard/rules.d
+ImplicitPolicyTarget=block
+PresentDevicePolicy=apply-policy
+InsertedDevicePolicy=apply-policy
+RestoreControllerDeviceState=true
+DeviceManagerBackend=uevent
+IPCAllowedUsers=root
+IPCAllowedGroups=
+AuditBackend=FileAudit
+AuditFilePath=/var/log/usbguard/usbguard-audit.log
+HidePII=false
+EOF
+        chmod 600 /etc/usbguard/usbguard.conf
+        chown root:root /etc/usbguard/usbguard.conf
+        systemctl start usbguard 2>/dev/null || true
+        systemctl enable usbguard 2>/dev/null || true
+        log_ok "Minimal USBGuard configuration restored"
+    fi
+    
+    # ─── Summary ───────────────────────────────────────────────────
+    echo ""
+    echo -e "${COLOR_BOLD}═══════════════════════════════════════════════════${COLOR_RESET}"
+    echo -e "${COLOR_GREEN}${COLOR_BOLD}  Uninstall completed successfully.${COLOR_RESET}"
+    echo -e "${COLOR_BOLD}═══════════════════════════════════════════════════${COLOR_RESET}"
+    echo ""
+    
+    return 0
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # MAIN
 # ═══════════════════════════════════════════════════════════════════════════════
 main() {
+    # If uninstall mode, skip installation entirely
+    if [[ "$MODE" == "uninstall" ]]; then
+        uninstall_usbguard
+        exit $?
+    fi
+    
     local start_time
     start_time=$(date +%s)
     
