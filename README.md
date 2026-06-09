@@ -1,154 +1,211 @@
-# USBGuard Approval Manager v2.2
+# USBGuard Approval Manager v3.0
 
-מערכת ניהול אנושית, שקופה ומבוקרת מעל מנוע האכיפה `usbguard`, המאפשרת למנהל מערכת לגלות, לזהות ולאשר התקני USB חסומים בממשק TUI אחיד.
+מערכת לניהול, ניטור ובקרה של התקני USB, מעל מנוע האכיפה `usbguard`.  
+כוללת ממשק Web, ממשק TUI לשליטה ישירה, ניטור BadUSB אוטומטי, ו-API REST מלא.
+
+---
+
+## תוכן עניינים
+
+- [USBGuard Approval Manager v3.0](#usbguard-approval-manager-v30)
+  - [תוכן עניינים](#תוכן-עניינים)
+  - [תכונות](#תכונות)
+  - [ארכיטקטורה](#ארכיטקטורה)
+  - [דרישות מערכת](#דרישות-מערכת)
+  - [התקנה](#התקנה)
+  - [שימוש](#שימוש)
+    - [Web](#web)
+    - [שורת פקודה](#שורת-פקודה)
+    - [לוגים](#לוגים)
+  - [מבנה התיקיות](#מבנה-התיקיות)
+  - [API](#api)
+  - [ניפוי תקלות](#ניפוי-תקלות)
+  - [רישיון](#רישיון)
+
+---
+
+## תכונות
+
+- **שליטה על התקני USB** – הצגה, אישור וחסימה של התקנים מחוברים
+- **BadUSB Monitor** – ניטור אוטומטי של התקני HID (מקלדת/עכבר) עם זיהוי התקפה לפי קצב אירועים (EPS)
+- **ניהול חוקרים** – חוקרי מערכת, קבועים, וזמניים עם TTL (פג תוקף אוטומטי)
+- **Fingerprinting** – זיהוי התקנים לפי טביעת אצבע פיזית (lsusb -v)
+- **IPC מהיר** – שימוש ב-usbguard-python (Socket IPC) עם נפילה אוטומטית ל-subprocess
+- **Rate Limiting** – הגנה על ה-API מפני DoS (Flask-Limiter)
+- **Error Sanitization** – הודעות שגיאה כלליות ב-Production, לוג מפורט בצד השרת
+- **התקנה מאובטחת** – 8 שלבים, --dry-run, --force, אימות חבילות קיימות/מעודכנות
+
+---
 
 ## ארכיטקטורה
 
 ```
-usbguard-manager/
-├── conf/
-│   └── approval-manager.conf       ← תצורה מרכזית
-├── scripts/
-│   ├── usb-approve.sh              ← TUI ראשי (זרימה A)
-│   ├── cleanup-expired.sh          ← ניקוי TTL (AWK State Machine)
-│   ├── backup-rules.sh             ← גיבוי יזום
-│   ├── restore-rules.sh            ← שחזור מגיבוי
-│   └── lib/
-│       ├── config-reader.sh        ← Parser בטוח (ללא source)
-│       ├── logger.sh               ← 5 רמות + audit trail
-│       ├── lock.sh                 ← flock wrappers
-│       ├── backup.sh               ← גיבוי + רוטציה + שחזור
-│       ├── validators.sh           ← pre-flight + syntax checks
-│       └── time-guards.sh          ← זיהוי קפיצות שעון
-├── rules.d/
-│   ├── 00-system.rules             ← חוקי מערכת (מוגנים)
-│   ├── 50-permanent.rules          ← אישורים קבועים
-│   └── 90-temporary.rules          ← אישורים זמניים (TTL)
-├── systemd/
-│   ├── usbguard-ttl-reaper.service ← oneshot service
-│   └── usbguard-ttl-reaper.timer   ← כל 5 דקות
-├── logrotate/
-│   └── usbguard-approval           ← סבב לוגים שבועי
-├── sudoers/
-│   └── usbguard-approval           ← הרשאות sudo מוגבלות
-├── deploy.sh                       ← התקנה אוטומטית + validation
-└── README.md
+web/app.py ──── usbguard-python ──── USBGuard Daemon (IPC)
+    │                                   
+    └──── subprocess ("usbguard list-devices") ──┘ (גיבוי)
+
+scripts/badusb-monitor.py ──── evdev ──── POST /api/block
 ```
+
+**מסלול מהיר:** Flask → usbguard-python (IPC) → USBGuard Daemon  
+**מסלול גיבוי:** Flask → subprocess → USBGuard Daemon  
+**BadUSB:** evdef → Events Per Second → חסימה אוטומטית דרך ה-API
+
+---
 
 ## דרישות מערכת
 
-| תוכנה | גרסה מינימלית |
-|--------|----------------|
-| Bash | 5.0+ |
-| USBGuard | 1.1.2+ |
-| whiptail | 0.52+ |
-| util-linux (flock) | 2.20+ |
-| gawk/mawk | - |
-| systemd | 245+ |
+- Linux (Kernel 4.15+)  
+- Bash 5.0+, Python 3.8+  
+- USBGuard 1.1.2+, systemd 245+, sudo  
+- חבילות Python: Flask, Flask-Limiter, (usbguard-python, evdev – אופציונליים)
 
-## התקנה מהירה
+---
+
+## התקנה
 
 ```bash
-# 1. העתק את התיקייה לשרת לינוקס
-# 2. הרץ כ-root:
-sudo ./deploy.sh
+# 1. שיבוט
+git clone <url>
+cd USBGUARD2
 
-# 3. צור מדיניות מערכת:
-sudo usbguard generate-policy > /etc/usbguard/rules.d/00-system.rules
+# 2. התקנה
+sudo ./install.sh
 
-# 4. הפעל את usbguard:
-sudo systemctl enable --now usbguard
-
-# 5. הרץ אישור:
-sudo /etc/usbguard/scripts/usb-approve.sh
+# אופציות:
+sudo ./install.sh --dry-run   # הצגת פעולות ללא ביצוע
+sudo ./install.sh --force     # התקנה ללא אישור
 ```
+
+הסקריפט בודק אילו חבילות מותקנות, אילו חסרות ואילו ניתנות לשדרוג, ומציג דוח לפני ההתקנה.
+
+לאחר ההתקנה: http://127.0.0.1:5000
+
+---
 
 ## שימוש
 
-### אישור התקני USB
+### Web
+
+| דף | תיאור |
+|------|--------|
+| Dashboard | סטטוס דמון, Reaper Timer, כמות חוקרים פעילים |
+| Devices | התקני USB מחוברים – חסומים ומורשים |
+| Rules | ניהול חוקרים לכל הקטגוריות |
+| Inspector | צפייה מפורטת, אישור/חסימה, טביעת אצבע |
+
+### שורת פקודה
 
 ```bash
-sudo usb-approve.sh
+sudo /etc/usbguard/scripts/usb-approve.sh        # TUI לאישור התקנים
+sudo /etc/usbguard/scripts/usbguard-status.sh     # מצב המערכת
+sudo /etc/usbguard/scripts/import-rules.sh --file rules.json
+sudo /etc/usbguard/scripts/export-rules.sh
 ```
 
-הסקריפט ידריך אותך בשלבים:
-1. בדיקות מקדימות
-2. גילוי התקנים חסומים
-3. בחירה מרובה (multiselect)
-4. בחירת סוג אישור (Permanent / Temporary)
-5. גיבוי אוטומטי
-6. כתיבה + אימות + טעינה מחדש
-7. התראה שולחנית
-
-### ניקוי אוטומטי
-
-מתבצע כל 5 דקות דרך systemd timer:
+### לוגים
 
 ```bash
-systemctl status usbguard-ttl-reaper.timer
+tail -f /var/log/usbguard-approval.log     # לוג ראשי
+tail -f /var/log/usbguard-badusb.log        # לוג BadUSB
+tail -f /var/log/usbguard-web.log           # לוג Web
+journalctl -u usbguard-web -f               # לוג systemd
 ```
 
-### גיבוי ידני
+---
 
-```bash
-sudo backup-rules.sh
+## מבנה התיקיות
+
+```
+USBGUARD2/
+├── conf/
+│   └── approval-manager.conf
+├── logrotate/
+│   └── usbguard-approval
+├── rules.d/
+│   ├── 00-system.rules
+│   ├── 50-permanent.rules
+│   └── 90-temporary.rules
+├── scripts/
+│   ├── lib/
+│   │   ├── backup.sh
+│   │   ├── config-reader.sh
+│   │   ├── device-utils.sh
+│   │   ├── lock.sh
+│   │   ├── logger.sh
+│   │   ├── stages-core.sh
+│   │   ├── stages-io.sh
+│   │   ├── time-guards.sh
+│   │   └── validators.sh
+│   ├── backup-rules.sh
+│   ├── badusb-monitor.py
+│   ├── check-config.sh
+│   ├── cleanup-expired.sh
+│   ├── export-rules.sh
+│   ├── import-rules.sh
+│   ├── restore-rules.sh
+│   ├── usb-approve.sh
+│   └── usbguard-status.sh
+├── sudoers/
+│   └── usbguard-approval
+├── systemd/
+│   ├── usbguard-behavioral.service
+│   ├── usbguard-ttl-reaper.service
+│   ├── usbguard-ttl-reaper.timer
+│   └── usbguard-web.service
+├── web/
+│   ├── static/
+│   │   ├── css/
+│   │   │   └── style.css
+│   │   └── js/
+│   │       └── script.js
+│   ├── templates/
+│   │   └── index.html
+│   ├── venv/                # סביבה וירטואלית (נוצרת מקומית)
+│   ├── app.py
+│   └── start-web.sh
+├── deploy-lib.sh
+├── deploy-uninstall.sh
+├── deploy.sh
+├── install.sh
+├── run-usbguard-web.sh
+├── start.sh
+├── validate_all.sh
+├── README.md
+└── LICENSE
 ```
 
-### שחזור מגיבוי
+> לתיאור מפורט של כל קובץ ראה [FILE-REFERENCE.md](FILE-REFERENCE.md).
 
-```bash
-sudo restore-rules.sh
-```
+---
 
-## תצורה
+## API
 
-קובץ התצורה: `/etc/usbguard/approval-manager.conf`
+| נתיב | שיטה | קצב | תיאור |
+|------|------|------|--------|
+| /api/status | GET | – | מצב דמון + מונה חוקרים |
+| /api/devices | GET | – | רשימת התקני USB |
+| /api/rules | GET | – | פירוט חוקרים לפי קטגוריה |
+| /api/device-detail | GET | – | lsusb -v מורחב |
+| /api/verify-fingerprint | POST | – | השוואת טביעת אצבע |
+| /api/approve | POST | 5/min | אישור התקן |
+| /api/block | POST | 5/min | חסימת התקן |
+| /api/change-status | POST | 5/min | שינוי סוג אישור |
+| /api/logs | GET | – | 50 שורות לוג אחרונות |
 
-פרמטרים עיקריים:
-- `TEMP_TTL_SECONDS` — TTL לאישורים זמניים (ברירת מחדל: 3600)
-- `BACKUP_KEEP` — מספר גיבויים לשמור (ברירת מחדל: 5)
-- `NOTIFY_DESKTOP` — התראות שולחניות (true/false)
-- `LOG_LEVEL` — DEBUG/INFO/WARN/ERROR/CRITICAL
+---
 
-## לוגים
+## ניפוי תקלות
 
-```bash
-# צפייה בזמן אמת
-tail -f /var/log/usbguard-approval.log
+| בעיה | פתרון |
+|------|--------|
+| "usbguard-python not available" | `pip3 install usbguard` |
+| IPC לא מגיב | `systemctl restart usbguard` |
+| badusb-monitor לא עובד | `python3 -c "from evdev import list_devices; print(list_devices())"` |
+| חסימות רבות מדי ב-API | Production: 200/day, 50/hour. Debug: מנוטרל |
 
-# חיפוש שגיאות
-grep ERROR /var/log/usbguard-approval.log
+---
 
-# אירועי ביקורת
-grep AUDIT /var/log/usbguard-approval.log
-```
+## רישיון
 
-## ניטור
-
-```bash
-# סטטוס timer
-systemctl status usbguard-ttl-reaper.timer
-
-# חוקים זמניים פעילים
-grep -c "ttl_epoch" /etc/usbguard/rules.d/90-temporary.rules
-
-# גיבויים זמינים
-ls -lth /etc/usbguard/backups/
-
-# התקנים חסומים
-sudo usbguard list-devices --blocked
-```
-
-## אבטחה
-
-- **ללא `source`** על קבצי תצורה (מניעת הזרקת קוד)
-- **flock גלובלי** למניעת Race Conditions
-- **Atomic writes** (temp file + mv)
-- **Rollback אוטומטי** בכל כשל reload
-- **חוקי מערכת מוגנים** (מניעת Lockout)
-- **Time Guards** לזיהוי קפיצות שעון
-- **Quoting מלא** על כל משתנה
-
-## גרסה
-
-**2.2** — Production-Grade
+MIT – ראה [LICENSE](LICENSE).

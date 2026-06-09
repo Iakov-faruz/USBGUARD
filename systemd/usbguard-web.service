@@ -4,6 +4,9 @@ Documentation=https://github.com/usbguard/usbguard-manager
 Requires=usbguard.service
 After=network.target usbguard.service
 Wants=usbguard-ttl-reaper.timer
+# ⬇️ הוסף את השורה הבאה - מונע בעיות אם הרשת עולה מאוחר
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
@@ -20,12 +23,16 @@ StandardError=journal
 # Security hardening
 NoNewPrivileges=true
 ProtectHome=true
-ProtectSystem=full
+ProtectSystem=strict
+# ⬆️ שיניתי מ-full ל-strict (מאפשר ReadWritePaths לעבוד טוב יותר)
 PrivateTmp=true
 CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 
-# תיקון: מתן הרשאת כתיבה ספציפית לנתיבים הנדרשים למרות ProtectSystem=full
+# התיקון שלך - תקין לחלוטין
 ReadWritePaths=/etc/usbguard /var/lib/usbguard-manager /var/log /var/tmp
+
+# ⬇️ הוסף timeout כדי למנוע hang בהשבתה
+TimeoutStopSec=10
 
 [Install]
 WantedBy=multi-user.target

@@ -1,0 +1,32 @@
+[Unit]
+Description=USBGuard BadUSB Behavioral Monitor Daemon
+Documentation=https://github.com/usbguard/usbguard-manager
+Requires=usbguard.service
+After=usbguard.service network.target
+Before=usbguard-web.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStart=/etc/usbguard/scripts/badusb-monitor.py
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+PIDFile=/var/run/usbguard-badusb.pid
+
+# Security hardening
+NoNewPrivileges=true
+ProtectHome=true
+ProtectSystem=strict
+PrivateTmp=true
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_NET_RAW
+
+# Access to input devices
+ReadWritePaths=/var/log /var/run
+
+# Timeout
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target

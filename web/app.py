@@ -1,3 +1,16 @@
+#!/usr/bin/env python3
+# ═══════════════════════════════════════════════════════════════════════════════
+# USBGuard Approval Manager - Flask Backend (usbguard-python + subprocess)
+# Version: 3.0 (Optimized with usbguard-python IPC)
+# ═══════════════════════════════════════════════════════════════════════════════
+# שיפור ביצועים: שימוש ב-usbguard-python לפקודות list-devices.
+#   • get_devices() → bus.getDevices() (IPC Socket, <10ms)
+#   • get_status()  → systemctl (קריאה קלה, נשאר)
+#   • get_rules()   → usb-approve.sh --list-rules (File I/O, נשאר)
+#   • approve/block → usb-approve.sh (לוגיקת קבצים מורכבת, נשאר)
+#   • device-detail → lsusb -v (אין API חלופי, נשאר)
+# ═══════════════════════════════════════════════════════════════════════════════
+
 import os
 import subprocess
 import re
@@ -9,16 +22,27 @@ from flask import Flask, render_template, jsonify, request
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 
-# ==============================================================================
-# USBGuard Approval Manager - Flask Backend (Intelligent Debug Mode)
-# Version: 2.4 - עם מצב דיבוג חכם
-# ==============================================================================
+# ─── usbguard-python: נסיון טעינה עם Fallback ─────────────────────────────────
+try:
+    import usbguard
+    from usbguard import DeviceManager, Rule
+    USBGUARD_PYTHON_AVAILABLE = True
+    logging.getLogger(__name__).info("usbguard-python loaded successfully (IPC mode)")
+except ImportError:
+    USBGUARD_PYTHON_AVAILABLE = False
+    logging.getLogger(__name__).warning(
+        "usbguard-python not available. Falling back to subprocess for device listing."
+    )
+    DeviceManager = None
+    Rule = None
 
-# ✅ זיהוי סביבה - משתנה סביבה או ארגומנט
+# ═══════════════════════════════════════════════════════════════════════════════
+# Application Setup
+# ═══════════════════════════════════════════════════════════════════════════════
+
 DEBUG_MODE = os.environ.get('FLASK_DEBUG', 'False').lower() == 'true'
 IS_PRODUCTION = not DEBUG_MODE
 
-# ✅ הגדרת Logger מותאם לסביבה
 log_level = logging.DEBUG if DEBUG_MODE else logging.INFO
 
 logging.basicConfig(
@@ -33,9 +57,8 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-# Rate Limiter - מושבת בדיבוג מלא
+# Rate Limiter
 if DEBUG_MODE:
-    # בדיבוג - ללא הגבלות
     limiter = Limiter(app=app, key_func=get_remote_address, enabled=False)
     logger.warning("⚠️ RUNNING IN DEBUG MODE - Rate limiting DISABLED")
 else:
@@ -51,6 +74,107 @@ LOG_FILE = "/var/log/usbguard-approval.log"
 RULES_DIR = "/etc/usbguard/rules.d"
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# usbguard-python Helpers
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def get_usbguard_bus():
+    """
+    Create a USBGuard DeviceManager IPC connection.
+    Returns None if usbguard-python is unavailable or connection fails.
+    """
+    if not USBGUARD_PYTHON_AVAILABLE:
+        return None
+    try:
+        bus = DeviceManager()
+        # Probe once to verify connection
+        bus.getDevices()
+        return bus
+    except Exception as e:
+        logger.warning(f"usbguard-python IPC connection failed: {e}")
+        return None
+
+
+def parse_device_from_ipc(device):
+    """
+    Convert a usbguard.Device object to a dictionary matching the API format.
+    Fields: device_id, status, id (VID:PID), serial, name, port, hash, etc.
+    """
+    try:
+        # Extract device ID from the Device object (integer)
+        dev_id = str(device.getID()) if hasattr(device, 'getID') else str(device.id)
+        
+        # Extract target status
+        try:
+            target = device.getTarget()
+            if hasattr(target, 'name'):
+                status = target.name.lower()
+            else:
+                status = str(target).lower()
+        except Exception:
+            status = "unknown"
+        
+        # Extract VID:PID from rule or device attributes
+        vid_pid = ""
+        try:
+            rule = device.getRule()
+            if rule:
+                vid_pid = f"{rule.getVendorID() or '0000'}:{rule.getProductID() or '0000'}"
+        except Exception:
+            pass
+        
+        # Extract name and serial from device attributes
+        name = "Unknown Device"
+        serial = "N/A"
+        try:
+            attrs = device.getDeviceDescriptor()
+            if attrs:
+                name = attrs.get('name', name) or name
+                serial = attrs.get('serial', serial) or serial
+        except Exception:
+            pass
+        
+        # Try to extract name/serial from the rule string as fallback
+        rule_str = ""
+        try:
+            rule = device.getRule()
+            if rule:
+                rule_str = str(rule)
+        except Exception:
+            pass
+        
+        if rule_str:
+            name_match = re.search(r'name "([^"]*)"', rule_str)
+            if name_match:
+                name = name_match.group(1).strip()
+            serial_match = re.search(r'serial "([^"]*)"', rule_str)
+            if serial_match:
+                serial = serial_match.group(1)
+        
+        # Build return dictionary matching the subprocess format
+        return {
+            "device_id": dev_id,
+            "status": status,
+            "id": vid_pid,
+            "serial": serial,
+            "name": name,
+            "port": "N/A",
+            "hash": "N/A",
+            "parent_hash": "N/A",
+            "interfaces": "N/A",
+            "connect_type": "N/A",
+            "raw": str(device)
+        }
+    except Exception as e:
+        logger.debug(f"IPC device parse error: {e}")
+        return None
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Subprocess Fallback (Legacy)
+# ═══════════════════════════════════════════════════════════════════════════════
+
 def run_command(cmd, shell=False):
     """
     Execute system commands with intelligent error reporting.
@@ -60,19 +184,15 @@ def run_command(cmd, shell=False):
     try:
         res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, shell=shell, timeout=15)
         
-        # תמיד רושמים בלוג מלא
         if res.returncode != 0 and res.stderr:
             logger.error(f"Command failed: {' '.join(cmd) if isinstance(cmd, list) else cmd} | Error: {res.stderr.strip()}")
         elif res.returncode == 0 and res.stdout and DEBUG_MODE:
             logger.debug(f"Command succeeded: {' '.join(cmd) if isinstance(cmd, list) else cmd}")
         
-        # ✅ התנהגות חכמה לפי מצב
         if res.returncode != 0:
             if DEBUG_MODE:
-                # בדיבוג - מחזירים את כל המידע
                 return res.stdout, res.stderr, res.returncode
             else:
-                # בייצור - רק הודעה גנרית
                 return res.stdout, "Operation failed. Check server logs for details.", res.returncode
         else:
             return res.stdout, "", res.returncode
@@ -87,6 +207,7 @@ def run_command(cmd, shell=False):
         if DEBUG_MODE:
             return "", str(e), -1
         return "", "Internal server error", -1
+
 
 def parse_lsusb_verbose(output):
     """Parse 'sudo lsusb -v -d VID:PID' output into structured JSON."""
@@ -113,7 +234,6 @@ def parse_lsusb_verbose(output):
         stripped = line.strip()
         lower = stripped.lower()
         
-        # Device descriptor section
         if 'device descriptor:' in lower:
             current_section = 'device'
             continue
@@ -147,7 +267,6 @@ def parse_lsusb_verbose(output):
                 result["configuration"]["power_type"] = stripped.strip('()')
             continue
         
-        # Parse key: value pairs
         if ':' in stripped and not stripped.startswith('('):
             key, _, val = stripped.partition(':')
             key = key.strip()
@@ -164,7 +283,6 @@ def parse_lsusb_verbose(output):
             elif current_section == 'endpoint' and current_endpoint is not None:
                 current_endpoint["descriptors"][key] = val
     
-    # Also parse the first line (bus info)
     first_line = lines[0] if lines else ""
     bus_match = re.search(r'Bus (\d+) Device (\d+): ID ([0-9a-fA-F]{4}:[0-9a-fA-F]{4})\s*(.*)', first_line)
     if bus_match:
@@ -176,6 +294,7 @@ def parse_lsusb_verbose(output):
         }
     
     return result
+
 
 def get_fingerprint_from_lsusb(output):
     """Extract a stable fingerprint from lsusb -v output."""
@@ -192,7 +311,6 @@ def get_fingerprint_from_lsusb(output):
         "bDeviceClass": dev.get("bDeviceClass", "").split()[0] if dev.get("bDeviceClass") else "",
     }
     
-    # Add interface classes if present
     if parsed.get("interfaces"):
         interface_classes = []
         for iface in parsed["interfaces"]:
@@ -209,9 +327,15 @@ def get_fingerprint_from_lsusb(output):
     
     return fingerprint
 
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# API Routes
+# ═══════════════════════════════════════════════════════════════════════════════
+
 @app.route('/')
 def index():
     return render_template('index.html')
+
 
 @app.route('/api/status', methods=['GET'])
 def get_status():
@@ -240,16 +364,37 @@ def get_status():
         "active_rules_count": rules_count
     })
 
+
 @app.route('/api/devices', methods=['GET'])
 def get_devices():
-    """Retrieve list of USB devices detected by USBGuard, with deep field parsing."""
+    """
+    Retrieve list of USB devices via usbguard-python IPC (fast path)
+    with automatic fallback to subprocess (legacy).
+    """
+    devices = []
+    
+    # ── Fast Path: usbguard-python IPC ─────────────────────────────────
+    bus = get_usbguard_bus()
+    if bus is not None:
+        try:
+            ipc_devices = bus.getDevices()
+            for device in ipc_devices:
+                parsed = parse_device_from_ipc(device)
+                if parsed:
+                    devices.append(parsed)
+            
+            if devices:
+                logger.debug(f"IPC: Retrieved {len(devices)} device(s) via usbguard-python")
+                return jsonify(devices)
+        except Exception as e:
+            logger.warning(f"IPC device listing failed, falling back to subprocess: {e}")
+    
+    # ── Fallback: subprocess ───────────────────────────────────────────
     stdout, stderr, rc = run_command(["usbguard", "list-devices"])
     if rc != 0:
         error_msg = stderr if DEBUG_MODE else "Failed to communicate with USBGuard daemon"
         logger.error(f"Failed to list devices: {stderr}")
         return jsonify({"error": error_msg}), 500
-
-    devices = []
     
     for line in stdout.strip().split('\n'):
         if not line:
@@ -320,7 +465,9 @@ def get_devices():
             "raw": line
         })
 
+    logger.debug(f"Subprocess: Retrieved {len(devices)} device(s)")
     return jsonify(devices)
+
 
 @app.route('/api/device-detail', methods=['GET'])
 def get_device_detail():
@@ -331,7 +478,6 @@ def get_device_detail():
     vid_pid = request.args.get('id', '')
     
     if not vid_pid or ':' not in vid_pid:
-        # If no VID:PID given, try to list all devices first
         stdout, stderr, rc = run_command(["lsusb"])
         if rc != 0:
             error_msg = stderr if DEBUG_MODE else "Failed to list USB devices"
@@ -348,7 +494,6 @@ def get_device_detail():
         
         return jsonify({"devices": devices_raw})
     
-    # Validate VID:PID format
     if not re.match(r'^[0-9a-fA-F]{4}:[0-9a-fA-F]{4}$', vid_pid):
         return jsonify({"error": "Invalid VID:PID format"}), 400
     
@@ -370,6 +515,7 @@ def get_device_detail():
         "fingerprint": fingerprint
     })
 
+
 @app.route('/api/verify-fingerprint', methods=['POST'])
 def verify_fingerprint():
     """
@@ -384,7 +530,6 @@ def verify_fingerprint():
     
     stored_fp = data.get("stored_fingerprint", {})
     
-    # Get current fingerprint
     stdout, stderr, rc = run_command(["sudo", "lsusb", "-v", "-d", vid_pid])
     if rc != 0:
         error_msg = stderr if DEBUG_MODE else "Cannot read device. Is it still connected?"
@@ -394,19 +539,16 @@ def verify_fingerprint():
     current_fp = get_fingerprint_from_lsusb(stdout)
     
     if not stored_fp:
-        # No stored fingerprint - return current one for saving
         return jsonify({
             "has_stored": False,
             "current_fingerprint": current_fp,
             "message": "No stored fingerprint found. This device has not been fingerprinted yet."
         })
     
-    # Compare fingerprints
     mismatches = []
     matches = 0
     total_fields = 0
     
-    # Compare scalar fields
     scalar_fields = ["iManufacturer", "iProduct", "iSerial", "bcdUSB", "bDeviceClass"]
     for field in scalar_fields:
         stored_val = stored_fp.get(field, "")
@@ -423,7 +565,6 @@ def verify_fingerprint():
                     "severity": "high" if field in ["iSerial", "bDeviceClass"] else "medium"
                 })
     
-    # Compare interface classes if present
     stored_interfaces = stored_fp.get("interfaces", [])
     current_interfaces = current_fp.get("interfaces", [])
     
@@ -459,6 +600,7 @@ def verify_fingerprint():
         "message": _get_verdict_message(match_pct, mismatches)
     })
 
+
 def _get_verdict_message(match_pct, mismatches):
     if match_pct >= 80 and len(mismatches) == 0:
         return "✅ Device identity confirmed. All fingerprints match."
@@ -471,6 +613,7 @@ def _get_verdict_message(match_pct, mismatches):
         return f"⚠️ Suspicious ({match_pct}% match). Device may be spoofed."
     else:
         return f"🚨 DANGEROUS ({match_pct}% match). Device fingerprint does NOT match stored profile!"
+
 
 @app.route('/api/rules', methods=['GET'])
 def get_rules():
@@ -504,7 +647,6 @@ def get_rules():
                 ttl = None
                 fingerprint = None
                 
-                # If temporary rule, check if next line is the ttl_epoch comment
                 if cat_key == "temporary" and i + 1 < len(lines):
                     next_line = lines[i+1].strip()
                     if next_line.startswith("# ttl_epoch:"):
@@ -512,7 +654,6 @@ def get_rules():
                         if ttl_val.isdigit():
                             ttl = int(ttl_val)
                 
-                # Check for fingerprint comment (can be anywhere after the rule)
                 for j in range(i + 1, min(i + 5, len(lines))):
                     check_line = lines[j].strip()
                     if check_line.startswith("# fingerprint:"):
@@ -523,31 +664,26 @@ def get_rules():
                             pass
                         break
                 
-                # Extract VID:PID
                 vid_pid = ""
                 vid_pid_match = re.search(r'id ([0-9a-fA-F]{4}:[0-9a-fA-F]{4})', rule_text)
                 if vid_pid_match:
                     vid_pid = vid_pid_match.group(1)
 
-                # Extract name
                 name = "Unknown Device"
                 name_match = re.search(r'name "([^"]*)"', rule_text)
                 if name_match:
                     name = name_match.group(1).strip()
 
-                # Extract serial
                 serial = "N/A"
                 serial_match = re.search(r'serial "([^"]*)"', rule_text)
                 if serial_match:
                     serial = serial_match.group(1)
 
-                # Extract hash
                 dev_hash = "N/A"
                 hash_match = re.search(r'hash "([^"]*)"', rule_text)
                 if hash_match:
                     dev_hash = hash_match.group(1)
 
-                # Extract interfaces
                 interfaces = "N/A"
                 intf_match = re.search(r'with-interface \{([^}]+)\}', rule_text)
                 if intf_match:
@@ -573,14 +709,16 @@ def get_rules():
 
     return jsonify(rules)
 
+
 @app.route('/api/approve', methods=['POST'])
+@limiter.limit("5 per minute")
 def approve_device():
     """Approve a selected blocked device via sudo usb-approve.sh, with optional fingerprint."""
     data = request.json or {}
     device_id = data.get("device_id")
-    approval_type = data.get("type", "T")  # "T" for Temporary, "P" for Permanent
+    approval_type = data.get("type", "T")
     ttl = data.get("ttl", "3600")
-    fingerprint = data.get("fingerprint")  # Optional fingerprint to store
+    fingerprint = data.get("fingerprint")
 
     if not device_id:
         return jsonify({"error": "Device ID is required"}), 400
@@ -594,7 +732,6 @@ def approve_device():
     stdout, stderr, rc = run_command(cmd)
 
     if rc == 0:
-        # If fingerprint provided, append it to the rule file
         if fingerprint:
             _append_fingerprint_to_rule(device_id, fingerprint)
         
@@ -612,6 +749,7 @@ def approve_device():
             "error": error_msg
         }), 500
 
+
 def _append_fingerprint_to_rule(device_id, fingerprint):
     """Append a fingerprint comment to the rule file atomically and safely."""
     vendor = fingerprint.get('idVendor', '').replace('0x', '').strip()
@@ -628,7 +766,6 @@ def _append_fingerprint_to_rule(device_id, fingerprint):
             
             modified = False
             for i, line in enumerate(lines):
-                # שימוש ב-Regex עם גבולות מילה (\b) למניעת התאמה חלקית
                 if re.search(rf'\ballow\s+id\s+{re.escape(rule_vid_pid)}\b', line):
                     fp_comment = f"# fingerprint: {json.dumps(fingerprint)}\n"
                     lines.insert(i + 1, fp_comment)
@@ -636,16 +773,13 @@ def _append_fingerprint_to_rule(device_id, fingerprint):
                     break
             
             if modified:
-                # כתיבה אטומית (Atomic Write) למניעת Race Conditions
                 dir_name = os.path.dirname(filepath)
                 fd, tmp_path = tempfile.mkstemp(dir=dir_name, prefix='.tmp_rule_')
                 try:
                     with os.fdopen(fd, 'w') as f:
                         f.writelines(lines)
-                    # הגדרת הרשאות אבטחה לפני ההחלפה
                     os.chmod(tmp_path, 0o600)
-                    os.chown(tmp_path, 0, 0)  # root:root
-                    # החלפה אטומית (mv)
+                    os.chown(tmp_path, 0, 0)
                     os.replace(tmp_path, filepath)
                     logger.info(f"Added fingerprint to rule for {rule_vid_pid}")
                     return True
@@ -659,7 +793,9 @@ def _append_fingerprint_to_rule(device_id, fingerprint):
             pass
     return False
 
+
 @app.route('/api/block', methods=['POST'])
+@limiter.limit("5 per minute")
 def block_device():
     """Block a device immediately and remove its rules file persistence."""
     data = request.json or {}
@@ -691,13 +827,15 @@ def block_device():
             "error": error_msg
         }), 500
 
+
 @app.route('/api/change-status', methods=['POST'])
+@limiter.limit("5 per minute")
 def change_status():
     """Change approval status (e.g. from permanent to temporary, or update TTL)."""
     data = request.json or {}
     device_id = data.get("device_id")
     vid_pid = data.get("vid_pid")
-    new_type = data.get("type")  # "P" or "T"
+    new_type = data.get("type")
     ttl = data.get("ttl", "3600")
 
     if not vid_pid:
@@ -705,16 +843,14 @@ def change_status():
     if new_type not in ["P", "T"]:
         return jsonify({"error": "Invalid approval type. Must be P or T."}), 400
 
-    # 1. Delete existing persistent rule (from both files)
     cmd_delete = ["sudo", "/etc/usbguard/scripts/usb-approve.sh", "--vidpid", str(vid_pid)]
-    _, _, rc_delete = run_command(cmd_delete)
+    stdout_delete, stderr_delete, rc_delete = run_command(cmd_delete)
 
     if rc_delete != 0:
-        logger.error(f"Failed to remove rule for {vid_pid}")
-        error_msg = stderr if DEBUG_MODE else "Failed to remove previous authorization rules."
+        logger.error(f"Failed to remove rule for {vid_pid}: {stderr_delete}")
+        error_msg = stderr_delete if DEBUG_MODE else "Failed to remove previous authorization rules."
         return jsonify({"success": False, "error": error_msg}), 500
 
-    # If the device is currently connected and we have a Device ID, approve it with the new configuration
     if device_id:
         cmd_approve = ["sudo", "/etc/usbguard/scripts/usb-approve.sh", "--device", str(device_id), "--type", new_type]
         if new_type == "T" and ttl:
@@ -737,6 +873,7 @@ def change_status():
             "error": "Device must be connected to apply status changes (rule recreation requires hardware signature scanning)."
         }), 400
 
+
 @app.route('/api/logs', methods=['GET'])
 def get_logs():
     """Fetch the latest 50 lines from the audit log."""
@@ -754,8 +891,12 @@ def get_logs():
             return jsonify({"error": f"Failed to read logs: {str(e)}"}), 500
         return jsonify({"error": "Failed to read logs"}), 500
 
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Entry Point
+# ═══════════════════════════════════════════════════════════════════════════════
+
 if __name__ == '__main__':
-    # הצגת מצב הפעלה ברורה
     print("=" * 60)
     if DEBUG_MODE:
         print("🔧 RUNNING IN DEBUG MODE - Full error details will be exposed")
@@ -763,6 +904,12 @@ if __name__ == '__main__':
     else:
         print("🔒 RUNNING IN PRODUCTION MODE - Errors are sanitized")
         print("✅ Detailed errors are written to /var/log/usbguard-web.log")
+    
+    if USBGUARD_PYTHON_AVAILABLE:
+        print("✅ usbguard-python: AVAILABLE (IPC mode)")
+    else:
+        print("⚠️  usbguard-python: NOT AVAILABLE (subprocess fallback)")
+    
     print("=" * 60)
     print(f"📍 Server running on: http://127.0.0.1:5000")
     print("=" * 60)

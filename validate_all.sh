@@ -3,7 +3,8 @@ set -e
 cd "$(dirname "$0")"
 echo "=== Validating all scripts in USBGUARD1 ==="
 errors=0
-for f in deploy.sh scripts/*.sh; do
+# for f in deploy.sh scripts/*.sh; do
+for f in deploy.sh scripts/*.sh scripts/lib/*.sh; do
     if [ -f "$f" ]; then
         echo -n "$f: "
         if bash -n "$f" 2>/dev/null; then
