@@ -58,7 +58,20 @@ _awk_ttl_filter() {
         } else if (state == 1) {
             if ($0 ~ /^[[:space:]]*# ttl_epoch:[[:space:]]*[0-9]+/) {
                 buffer = buffer ORS $0
-                state = 2
+                
+                comment_line = $0
+                gsub(/^[[:space:]]*# ttl_epoch:[[:space:]]*/, "", comment_line)
+                gsub(/[[:space:]]*$/, "", comment_line)
+                epoch = int(comment_line)
+
+                if (epoch <= now) {
+                    expired_count++
+                } else {
+                    print buffer
+                }
+                
+                state = 0
+                buffer = ""
             } else if ($0 ~ /^[[:space:]]*allow/) {
                 expired_count++
                 print "WARN: Discarded orphaned allow rule: " buffer > "/dev/stderr"
@@ -73,25 +86,6 @@ _awk_ttl_filter() {
                 print $0
                 state = 0
             }
-        } else if (state == 2) {
-            split(buffer, lines, ORS)
-            comment_line = lines[2]
-            gsub(/^[[:space:]]*# ttl_epoch:[[:space:]]*/, "", comment_line)
-            gsub(/[[:space:]]*$/, "", comment_line)
-            epoch = int(comment_line)
-
-            if (epoch <= now) {
-                expired_count++
-                state = 0
-                buffer = ""
-            } else {
-                print buffer
-                state = 3
-                buffer = ""
-            }
-        } else if (state == 3) {
-            print $0
-            state = 0
         }
     }
     END {
@@ -231,4 +225,6 @@ main() {
     exit 0
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main "$@"
+fi

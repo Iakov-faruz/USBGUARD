@@ -20,16 +20,16 @@ _parse_device_info() {
             echo "$device_line" | grep -oP 'id \K[0-9a-fA-F]{4}:[0-9a-fA-F]{4}'
             ;;
         serial)
-            echo "$device_line" | grep -oP 'serial \K\S+' || echo "no-serial"
+            echo "$device_line" | grep -oP 'serial "?\K[^"\s]+' || echo "no-serial"
             ;;
         name)
-            echo "$device_line" | grep -oP 'name "\K[^"]+' || echo "Unknown Device"
+            echo "$device_line" | grep -oP 'name "?\K[^"]+(?="?)' | sed 's/"$//' || echo "Unknown Device"
             ;;
         hash)
-            echo "$device_line" | grep -oP 'hash \K\S+' || echo ""
+            echo "$device_line" | grep -oP 'hash "?\K[^"\s]+' || echo ""
             ;;
         port)
-            echo "$device_line" | grep -oP 'via-port \K\S+' || echo "N/A"
+            echo "$device_line" | grep -oP 'via-port "?\K[^"\s]+' || echo "N/A"
             ;;
         device_id)
             echo "$device_line" | grep -oP '^[0-9]+'

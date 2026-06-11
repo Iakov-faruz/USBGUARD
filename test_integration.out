@@ -1,0 +1,38 @@
+usbguard-python not available. Falling back to subprocess for device listing.
+/mnt/c/Users/5722y/Desktop/CLIN_TEST/USBGUARD2/web/venv/lib/python3.12/site-packages/flask_limiter/_extension.py:364: UserWarning: Using the in-memory storage for tracking rate limits as no storage was explicitly specified. This is not recommended for production use. See: https://flask-limiter.readthedocs.io#configuring-a-storage-backend for documentation about configuring the storage backend.
+  warnings.warn(
+2026-06-11 20:19:06,433 - app - INFO - ✅ Production mode - Rate limiting ENABLED
+.2026-06-11 20:19:06,506 - app - INFO - Device 5 approved as T
+.2026-06-11 20:19:06,509 - app - INFO - Device 3 approved as T
+2026-06-11 20:19:06,510 - app - INFO - Blocked device: 0781:5581
+.2026-06-11 20:19:06,511 - app - INFO - Device 3 approved as T
+2026-06-11 20:19:06,511 - app - INFO - Changed status for 0781:5581 to P
+.2026-06-11 20:19:06,513 - app - INFO - Device 3 approved as T
+....E
+======================================================================
+ERROR: test_ttl_rule_lifecycle (__main__.TestTTLExpirationCycle.test_ttl_rule_lifecycle)
+Simulate: create rule with TTL → check expiry → verify removal.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/mnt/c/Users/5722y/Desktop/CLIN_TEST/USBGUARD2/unit_test/test_integration.py", line 345, in test_ttl_rule_lifecycle
+    code, out, _ = run_bash_snippet(script)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/c/Users/5722y/Desktop/CLIN_TEST/USBGUARD2/unit_test/test_integration.py", line 367, in run_bash_snippet
+    res = subprocess.run(['bash', '-c', script], capture_output=True, text=True, timeout=10)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/subprocess.py", line 550, in run
+    stdout, stderr = process.communicate(input, timeout=timeout)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/subprocess.py", line 1209, in communicate
+    stdout, stderr = self._communicate(input, endtime, timeout)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/subprocess.py", line 2116, in _communicate
+    self._check_timeout(endtime, orig_timeout, stdout, stderr)
+  File "/usr/lib/python3.12/subprocess.py", line 1253, in _check_timeout
+    raise TimeoutExpired(
+subprocess.TimeoutExpired: Command '['bash', '-c', '\n            source "/mnt/c/Users/5722y/Desktop/CLIN_TEST/USBGUARD2/scripts/lib/logger.sh" 2>/dev/null\n            source "/mnt/c/Users/5722y/Desktop/CLIN_TEST/USBGUARD2/scripts/lib/config-reader.sh" 2>/dev/null\n            source "/mnt/c/Users/5722y/Desktop/CLIN_TEST/USBGUARD2/scripts/lib/lock.sh" 2>/dev/null\n            source "/mnt/c/Users/5722y/Desktop/CLIN_TEST/USBGUARD2/scripts/lib/time-guards.sh" 2>/dev/null\n            source "/mnt/c/Users/5722y/Desktop/CLIN_TEST/USBGUARD2/scripts/cleanup-expired.sh" 2>/dev/null\n            _awk_ttl_filter 500 "/tmp/tmptogxzc5s.rules"\n            ']' timed out after 10 seconds
+
+----------------------------------------------------------------------
+Ran 9 tests in 10.099s
+
+FAILED (errors=1)

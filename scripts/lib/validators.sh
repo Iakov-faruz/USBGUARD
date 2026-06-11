@@ -15,7 +15,9 @@ readonly VALIDATOR_DEFAULT_MIN_DISK_MB=50
 # שימוש: check_root || exit 1
 # ═══════════════════════════════════════════════════════════════
 check_root() {
-    if [[ $EUID -ne 0 ]]; then
+    local euid
+    euid=$(id -u 2>/dev/null || echo "$EUID")
+    if [[ "$euid" -ne 0 ]]; then
         log_error "VALIDATOR" "This script must be run as root (use sudo)"
         echo "ERROR: This script must be run as root (use sudo)" >&2
         return 1
@@ -194,7 +196,7 @@ check_rule_duplicate() {
 
     # Extract the rule content (remove comments, trim whitespace)
     local rule_core
-    rule_core=$(echo "$rule" | sed 's/#.*$//' | xargs)
+    rule_core=$(echo "$rule" | sed 's/#.*$//' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
 
     if [[ -z "$rule_core" ]]; then
         return 2  # Empty rule after stripping comments

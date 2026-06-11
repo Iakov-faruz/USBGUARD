@@ -1,0 +1,1 @@
+echo BASH_SOURCE=${BASH_SOURCE[0]} ZERO=$0

@@ -13,7 +13,7 @@ readonly CONFIG_READER_DEFAULT_CONF="/etc/usbguard/approval-manager.conf"
 
 # ─── Dangerous Characters Filter ──────────────────────────────
 # תווים אסורים בערכי קונפיג (shell special chars)
-readonly CONFIG_READER_FORBIDDEN_CHARS='[$`\;|&<>(){}[\]!]'
+readonly CONFIG_READER_FORBIDDEN_CHARS='[]$`;|&<>(){}[!]'
 
 # ═══════════════════════════════════════════════════════════════
 # פונקציה: get_conf
@@ -27,23 +27,23 @@ get_conf() {
 
     # ── Validation ──────────────────────────────────────────────
     if [[ -z "$key" ]]; then
-        log_error "config-reader: KEY parameter is empty" >&2
+        echo "ERROR: [config-reader] KEY parameter is empty" >&2
         return 1
     fi
 
     if [[ ! -f "$config_file" ]]; then
-        log_error "config-reader: Config file not found: $config_file" >&2
+        echo "ERROR: [config-reader] Config file not found: $config_file" >&2
         return 1
     fi
 
     if [[ ! -r "$config_file" ]]; then
-        log_error "config-reader: Config file not readable: $config_file" >&2
+        echo "ERROR: [config-reader] Config file not readable: $config_file" >&2
         return 1
     fi
 
     # ── Validate KEY format (alphanumeric + underscores only) ───
     if [[ ! "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
-        log_error "config-reader: Invalid KEY format: '$key'" >&2
+        echo "ERROR: [config-reader] Invalid KEY format: '$key'" >&2
         return 1
     fi
 
@@ -107,14 +107,14 @@ get_conf() {
 
         # ── בדיקת תווים מסוכנים ─────────────────────────────────
         if echo "$value" | grep -qE "$CONFIG_READER_FORBIDDEN_CHARS" 2>/dev/null; then
-            log_error "config-reader: Dangerous characters detected in value for '$key'" >&2
+            echo "ERROR: [config-reader] Dangerous characters detected in value for '$key'" >&2
             return 1
         fi
 
         # ── Sanitization נוסף: הסר תווי control ─────────────────
         sanitized=$(echo "$value" | tr -d '[:cntrl:]' 2>/dev/null)
         if [[ "$?" -ne 0 ]]; then
-            log_error "config-reader: Sanitization failed for '$key'" >&2
+            echo "ERROR: [config-reader] Sanitization failed for '$key'" >&2
             return 1
         fi
 
@@ -171,7 +171,7 @@ get_conf_int() {
     if [[ "$raw_value" =~ ^[0-9]+$ ]]; then
         echo "$raw_value"
     else
-        log_warn "config-reader: Expected integer for '$key', got '$raw_value'. Using default: $default" >&2
+        echo "WARN: [config-reader] Expected integer for '$key', got '$raw_value'. Using default: $default" >&2
         echo "$default"
     fi
 
@@ -206,7 +206,7 @@ get_conf_bool() {
             echo "false"
             ;;
         *)
-            log_warn "config-reader: Expected boolean for '$key', got '$raw_value'. Using default: $default" >&2
+            echo "WARN: [config-reader] Expected boolean for '$key', got '$raw_value'. Using default: $default" >&2
             
             echo "$default"
             ;;

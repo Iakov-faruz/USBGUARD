@@ -440,7 +440,7 @@ def get_devices():
         interfaces = "N/A"
         intf_match = re.search(r'with-interface \{([^}]+)\}', line)
         if intf_match:
-            interfaces = intf_match.group(1)
+            interfaces = intf_match.group(1).strip()
         else:
             intf_match_single = re.search(r'with-interface (\S+)', line)
             if intf_match_single:
@@ -477,7 +477,7 @@ def get_device_detail():
     """
     vid_pid = request.args.get('id', '')
     
-    if not vid_pid or ':' not in vid_pid:
+    if not vid_pid:
         stdout, stderr, rc = run_command(["lsusb"])
         if rc != 0:
             error_msg = stderr if DEBUG_MODE else "Failed to list USB devices"
@@ -549,7 +549,7 @@ def verify_fingerprint():
     matches = 0
     total_fields = 0
     
-    scalar_fields = ["iManufacturer", "iProduct", "iSerial", "bcdUSB", "bDeviceClass"]
+    scalar_fields = ["idVendor", "idProduct", "iManufacturer", "iProduct", "iSerial", "bcdUSB", "bDeviceClass"]
     for field in scalar_fields:
         stored_val = stored_fp.get(field, "")
         current_val = current_fp.get(field, "")

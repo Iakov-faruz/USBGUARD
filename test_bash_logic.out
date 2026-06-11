@@ -1,0 +1,257 @@
+....EEEEE.....FF........F....F...F..F......F.F................EE.F.F...
+======================================================================
+ERROR: test_cleanup_expired_all_expired (__main__.TestCleanupExpired.test_cleanup_expired_all_expired)
+All expired rules should be removed.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/mnt/c/Users/5722y/Desktop/CLIN_TEST/USBGUARD2/unit_test/test_bash_logic.py", line 828, in test_cleanup_expired_all_expired
+    code, out, _ = self.run_bash_snippet(script)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/c/Users/5722y/Desktop/CLIN_TEST/USBGUARD2/unit_test/test_bash_logic.py", line 60, in run_bash_snippet
+    res = subprocess.run(['bash', '-c', script], capture_output=True, text=True, timeout=10)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/subprocess.py", line 550, in run
+    stdout, stderr = process.communicate(input, timeout=timeout)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/subprocess.py", line 1209, in communicate
+    stdout, stderr = self._communicate(input, endtime, timeout)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/subprocess.py", line 2116, in _communicate
+    self._check_timeout(endtime, orig_timeout, stdout, stderr)
+  File "/usr/lib/python3.12/subprocess.py", line 1253, in _check_timeout
+    raise TimeoutExpired(
+subprocess.TimeoutExpired: Command '['bash', '-c', '\n        source "/mnt/c/Users/5722y/Desktop/CLIN_TEST/USBGUARD2/scripts/lib/logger.sh" 2>/dev/null\n        source "/mnt/c/Users/5722y/Desktop/CLIN_TEST/USBGUARD2/scripts/lib/config-reader.sh" 2>/dev/null\n        source "/mnt/c/Users/5722y/Desktop/CLIN_TEST/USBGUARD2/scripts/lib/lock.sh" 2>/dev/null\n        source "/mnt/c/Users/5722y/Desktop/CLIN_TEST/USBGUARD2/scripts/lib/time-guards.sh" 2>/dev/null\n        source "/mnt/c/Users/5722y/Desktop/CLIN_TEST/USBGUARD2/scripts/cleanup-expired.sh" 2>/dev/null\n        _awk_ttl_filter 5000 "/tmp/tmp9av7ynzl"\n        ']' timed out after 10 seconds
+
+======================================================================
+ERROR: test_cleanup_expired_all_valid (__main__.TestCleanupExpired.test_cleanup_expired_all_valid)
+All valid rules should remain.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/mnt/c/Users/5722y/Desktop/CLIN_TEST/USBGUARD2/unit_test/test_bash_logic.py", line 808, in test_cleanup_expired_all_valid
+    code, out, _ = self.run_bash_snippet(script)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/c/Users/5722y/Desktop/CLIN_TEST/USBGUARD2/unit_test/test_bash_logic.py", line 60, in run_bash_snippet
+    res = subprocess.run(['bash', '-c', script], capture_output=True, text=True, timeout=10)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/subprocess.py", line 550, in run
+    stdout, stderr = process.communicate(input, timeout=timeout)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/subprocess.py", line 1209, in communicate
+    stdout, stderr = self._communicate(input, endtime, timeout)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/subprocess.py", line 2116, in _communicate
+    self._check_timeout(endtime, orig_timeout, stdout, stderr)
+  File "/usr/lib/python3.12/subprocess.py", line 1253, in _check_timeout
+    raise TimeoutExpired(
+subprocess.TimeoutExpired: Command '['bash', '-c', '\n        source "/mnt/c/Users/5722y/Desktop/CLIN_TEST/USBGUARD2/scripts/lib/logger.sh" 2>/dev/null\n        source "/mnt/c/Users/5722y/Desktop/CLIN_TEST/USBGUARD2/scripts/lib/config-reader.sh" 2>/dev/null\n        source "/mnt/c/Users/5722y/Desktop/CLIN_TEST/USBGUARD2/scripts/lib/lock.sh" 2>/dev/null\n        source "/mnt/c/Users/5722y/Desktop/CLIN_TEST/USBGUARD2/scripts/lib/time-guards.sh" 2>/dev/null\n        source "/mnt/c/Users/5722y/Desktop/CLIN_TEST/USBGUARD2/scripts/cleanup-expired.sh" 2>/dev/null\n        _awk_ttl_filter 3000 "/tmp/tmpk37zuu_4"\n        ']' timed out after 10 seconds
+
+======================================================================
+ERROR: test_cleanup_expired_boundary_epoch (__main__.TestCleanupExpired.test_cleanup_expired_boundary_epoch)
+Rule with TTL exactly equal to now should be expired.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/mnt/c/Users/5722y/Desktop/CLIN_TEST/USBGUARD2/unit_test/test_bash_logic.py", line 858, in test_cleanup_expired_boundary_epoch
+    code, out, _ = self.run_bash_snippet(script)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/c/Users/5722y/Desktop/CLIN_TEST/USBGUARD2/unit_test/test_bash_logic.py", line 60, in run_bash_snippet
+    res = subprocess.run(['bash', '-c', script], capture_output=True, text=True, timeout=10)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/subprocess.py", line 550, in run
+    stdout, stderr = process.communicate(input, timeout=timeout)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/subprocess.py", line 1209, in communicate
+    stdout, stderr = self._communicate(input, endtime, timeout)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/subprocess.py", line 2116, in _communicate
+    self._check_timeout(endtime, orig_timeout, stdout, stderr)
+  File "/usr/lib/python3.12/subprocess.py", line 1253, in _check_timeout
+    raise TimeoutExpired(
+subprocess.TimeoutExpired: Command '['bash', '-c', '\n        source "/mnt/c/Users/5722y/Desktop/CLIN_TEST/USBGUARD2/scripts/lib/logger.sh" 2>/dev/null\n        source "/mnt/c/Users/5722y/Desktop/CLIN_TEST/USBGUARD2/scripts/lib/config-reader.sh" 2>/dev/null\n        source "/mnt/c/Users/5722y/Desktop/CLIN_TEST/USBGUARD2/scripts/lib/lock.sh" 2>/dev/null\n        source "/mnt/c/Users/5722y/Desktop/CLIN_TEST/USBGUARD2/scripts/lib/time-guards.sh" 2>/dev/null\n        source "/mnt/c/Users/5722y/Desktop/CLIN_TEST/USBGUARD2/scripts/cleanup-expired.sh" 2>/dev/null\n        _awk_ttl_filter 3000 "/tmp/tmpo8xps5y8"\n        ']' timed out after 10 seconds
+
+======================================================================
+ERROR: test_cleanup_expired_empty_file (__main__.TestCleanupExpired.test_cleanup_expired_empty_file)
+Empty rules file should produce empty output.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/mnt/c/Users/5722y/Desktop/CLIN_TEST/USBGUARD2/unit_test/test_bash_logic.py", line 843, in test_cleanup_expired_empty_file
+    code, out, _ = self.run_bash_snippet(script)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/c/Users/5722y/Desktop/CLIN_TEST/USBGUARD2/unit_test/test_bash_logic.py", line 60, in run_bash_snippet
+    res = subprocess.run(['bash', '-c', script], capture_output=True, text=True, timeout=10)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/subprocess.py", line 550, in run
+    stdout, stderr = process.communicate(input, timeout=timeout)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/subprocess.py", line 1209, in communicate
+    stdout, stderr = self._communicate(input, endtime, timeout)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/subprocess.py", line 2116, in _communicate
+    self._check_timeout(endtime, orig_timeout, stdout, stderr)
+  File "/usr/lib/python3.12/subprocess.py", line 1253, in _check_timeout
+    raise TimeoutExpired(
+subprocess.TimeoutExpired: Command '['bash', '-c', '\n        source "/mnt/c/Users/5722y/Desktop/CLIN_TEST/USBGUARD2/scripts/lib/logger.sh" 2>/dev/null\n        source "/mnt/c/Users/5722y/Desktop/CLIN_TEST/USBGUARD2/scripts/lib/config-reader.sh" 2>/dev/null\n        source "/mnt/c/Users/5722y/Desktop/CLIN_TEST/USBGUARD2/scripts/lib/lock.sh" 2>/dev/null\n        source "/mnt/c/Users/5722y/Desktop/CLIN_TEST/USBGUARD2/scripts/lib/time-guards.sh" 2>/dev/null\n        source "/mnt/c/Users/5722y/Desktop/CLIN_TEST/USBGUARD2/scripts/cleanup-expired.sh" 2>/dev/null\n        _awk_ttl_filter 3000 "/tmp/tmp7hhdmdmc"\n        ']' timed out after 10 seconds
+
+======================================================================
+ERROR: test_cleanup_expired_removes_old_rules (__main__.TestCleanupExpired.test_cleanup_expired_removes_old_rules)
+Expired rules should be removed, valid rules kept.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/mnt/c/Users/5722y/Desktop/CLIN_TEST/USBGUARD2/unit_test/test_bash_logic.py", line 787, in test_cleanup_expired_removes_old_rules
+    code, out, _ = self.run_bash_snippet(script)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/c/Users/5722y/Desktop/CLIN_TEST/USBGUARD2/unit_test/test_bash_logic.py", line 60, in run_bash_snippet
+    res = subprocess.run(['bash', '-c', script], capture_output=True, text=True, timeout=10)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/subprocess.py", line 550, in run
+    stdout, stderr = process.communicate(input, timeout=timeout)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/subprocess.py", line 1209, in communicate
+    stdout, stderr = self._communicate(input, endtime, timeout)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/subprocess.py", line 2116, in _communicate
+    self._check_timeout(endtime, orig_timeout, stdout, stderr)
+  File "/usr/lib/python3.12/subprocess.py", line 1253, in _check_timeout
+    raise TimeoutExpired(
+subprocess.TimeoutExpired: Command '['bash', '-c', '\n        source "/mnt/c/Users/5722y/Desktop/CLIN_TEST/USBGUARD2/scripts/lib/logger.sh" 2>/dev/null\n        source "/mnt/c/Users/5722y/Desktop/CLIN_TEST/USBGUARD2/scripts/lib/config-reader.sh" 2>/dev/null\n        source "/mnt/c/Users/5722y/Desktop/CLIN_TEST/USBGUARD2/scripts/lib/lock.sh" 2>/dev/null\n        source "/mnt/c/Users/5722y/Desktop/CLIN_TEST/USBGUARD2/scripts/lib/time-guards.sh" 2>/dev/null\n        source "/mnt/c/Users/5722y/Desktop/CLIN_TEST/USBGUARD2/scripts/cleanup-expired.sh" 2>/dev/null\n        _awk_ttl_filter 3000 "/tmp/tmp6qv_6dw0"\n        ']' timed out after 10 seconds
+
+======================================================================
+ERROR: test_check_config_file_missing (__main__.TestValidators.test_check_config_file_missing)
+Missing config file should fail.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/mnt/c/Users/5722y/Desktop/CLIN_TEST/USBGUARD2/unit_test/test_bash_logic.py", line 684, in test_check_config_file_missing
+    code, out, _ = self.run_bash_snippet(script)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/c/Users/5722y/Desktop/CLIN_TEST/USBGUARD2/unit_test/test_bash_logic.py", line 60, in run_bash_snippet
+    res = subprocess.run(['bash', '-c', script], capture_output=True, text=True, timeout=10)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/subprocess.py", line 550, in run
+    stdout, stderr = process.communicate(input, timeout=timeout)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/subprocess.py", line 1209, in communicate
+    stdout, stderr = self._communicate(input, endtime, timeout)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/subprocess.py", line 2116, in _communicate
+    self._check_timeout(endtime, orig_timeout, stdout, stderr)
+  File "/usr/lib/python3.12/subprocess.py", line 1253, in _check_timeout
+    raise TimeoutExpired(
+subprocess.TimeoutExpired: Command '['bash', '-c', '\n        source "/mnt/c/Users/5722y/Desktop/CLIN_TEST/USBGUARD2/scripts/lib/logger.sh" 2>/dev/null\n        source "/mnt/c/Users/5722y/Desktop/CLIN_TEST/USBGUARD2/scripts/lib/config-reader.sh" 2>/dev/null\n        source "/mnt/c/Users/5722y/Desktop/CLIN_TEST/USBGUARD2/scripts/lib/validators.sh" 2>/dev/null\n        check_config_file "/nonexistent/config.conf"\n        echo "RC=$?"\n        ']' timed out after 10 seconds
+
+======================================================================
+ERROR: test_check_config_file_valid (__main__.TestValidators.test_check_config_file_valid)
+Valid config file should pass.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/mnt/c/Users/5722y/Desktop/CLIN_TEST/USBGUARD2/unit_test/test_bash_logic.py", line 672, in test_check_config_file_valid
+    code, out, _ = self.run_bash_snippet(script)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/c/Users/5722y/Desktop/CLIN_TEST/USBGUARD2/unit_test/test_bash_logic.py", line 60, in run_bash_snippet
+    res = subprocess.run(['bash', '-c', script], capture_output=True, text=True, timeout=10)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/subprocess.py", line 550, in run
+    stdout, stderr = process.communicate(input, timeout=timeout)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/subprocess.py", line 1209, in communicate
+    stdout, stderr = self._communicate(input, endtime, timeout)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/subprocess.py", line 2116, in _communicate
+    self._check_timeout(endtime, orig_timeout, stdout, stderr)
+  File "/usr/lib/python3.12/subprocess.py", line 1253, in _check_timeout
+    raise TimeoutExpired(
+subprocess.TimeoutExpired: Command '['bash', '-c', '\n        source "/mnt/c/Users/5722y/Desktop/CLIN_TEST/USBGUARD2/scripts/lib/logger.sh" 2>/dev/null\n        source "/mnt/c/Users/5722y/Desktop/CLIN_TEST/USBGUARD2/scripts/lib/config-reader.sh" 2>/dev/null\n        source "/mnt/c/Users/5722y/Desktop/CLIN_TEST/USBGUARD2/scripts/lib/validators.sh" 2>/dev/null\n        check_config_file "/tmp/tmp8w80gn1a"\n        echo "RC=$?"\n        ']' timed out after 10 seconds
+
+======================================================================
+FAIL: test_get_conf_dangerous_chars_rejected (__main__.TestConfigReader.test_get_conf_dangerous_chars_rejected)
+Values with dangerous chars should be rejected.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/mnt/c/Users/5722y/Desktop/CLIN_TEST/USBGUARD2/unit_test/test_bash_logic.py", line 137, in test_get_conf_dangerous_chars_rejected
+    self.assertNotEqual(code, 0)
+AssertionError: 0 == 0
+
+======================================================================
+FAIL: test_get_conf_dollar_sign_rejected (__main__.TestConfigReader.test_get_conf_dollar_sign_rejected)
+Values with $ should be rejected.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/mnt/c/Users/5722y/Desktop/CLIN_TEST/USBGUARD2/unit_test/test_bash_logic.py", line 144, in test_get_conf_dollar_sign_rejected
+    self.assertNotEqual(code, 0)
+AssertionError: 0 == 0
+
+======================================================================
+FAIL: test_get_conf_pipe_rejected (__main__.TestConfigReader.test_get_conf_pipe_rejected)
+Values with pipe should be rejected.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/mnt/c/Users/5722y/Desktop/CLIN_TEST/USBGUARD2/unit_test/test_bash_logic.py", line 151, in test_get_conf_pipe_rejected
+    self.assertNotEqual(code, 0)
+AssertionError: 0 == 0
+
+======================================================================
+FAIL: test_validate_config_file_dangerous_chars (__main__.TestConfigReader.test_validate_config_file_dangerous_chars)
+Dangerous characters in value should fail.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/mnt/c/Users/5722y/Desktop/CLIN_TEST/USBGUARD2/unit_test/test_bash_logic.py", line 250, in test_validate_config_file_dangerous_chars
+    self.assertIn('ERROR', out)
+AssertionError: 'ERROR' not found in 'VALIDATION_OK'
+
+======================================================================
+FAIL: test_parse_device_info_device_id (__main__.TestDeviceUtils.test_parse_device_info_device_id)
+Should extract device index from beginning of line.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/mnt/c/Users/5722y/Desktop/CLIN_TEST/USBGUARD2/unit_test/test_bash_logic.py", line 737, in test_parse_device_info_device_id
+    self.assertIn('DEV_ID=5', out)
+AssertionError: 'DEV_ID=5' not found in 'DEV_ID='
+
+======================================================================
+FAIL: test_parse_device_info_name (__main__.TestDeviceUtils.test_parse_device_info_name)
+Should extract name from device line.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/mnt/c/Users/5722y/Desktop/CLIN_TEST/USBGUARD2/unit_test/test_bash_logic.py", line 715, in test_parse_device_info_name
+    self.assertIn('NAME=SanDisk Ultra', out)
+AssertionError: 'NAME=SanDisk Ultra' not found in 'NAME='
+
+======================================================================
+FAIL: test_log_audit_writes_audit_entry (__main__.TestLogger.test_log_audit_writes_audit_entry)
+log_audit should write audit entry.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/mnt/c/Users/5722y/Desktop/CLIN_TEST/USBGUARD2/unit_test/test_bash_logic.py", line 457, in test_log_audit_writes_audit_entry
+    self.assertIn('APPROVE', out)
+AssertionError: 'APPROVE' not found in ''
+
+======================================================================
+FAIL: test_log_info_writes_to_file (__main__.TestLogger.test_log_info_writes_to_file)
+log_info should write to log file.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/mnt/c/Users/5722y/Desktop/CLIN_TEST/USBGUARD2/unit_test/test_bash_logic.py", line 433, in test_log_info_writes_to_file
+    self.assertIn('Hello World', out)
+AssertionError: 'Hello World' not found in ''
+
+======================================================================
+FAIL: test_check_root_as_root (__main__.TestValidators.test_check_root_as_root)
+Running as root should pass.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/mnt/c/Users/5722y/Desktop/CLIN_TEST/USBGUARD2/unit_test/test_bash_logic.py", line 573, in test_check_root_as_root
+    self.assertIn('ROOT_OK', out)
+AssertionError: 'ROOT_OK' not found in 'ROOT_FAIL'
+
+======================================================================
+FAIL: test_check_rule_duplicate_found (__main__.TestValidators.test_check_rule_duplicate_found)
+Existing rule should be detected as duplicate.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/mnt/c/Users/5722y/Desktop/CLIN_TEST/USBGUARD2/unit_test/test_bash_logic.py", line 632, in test_check_rule_duplicate_found
+    self.assertIn('RC=0', out)  # 0 = duplicate found
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 'RC=0' not found in 'RC=1'
+
+----------------------------------------------------------------------
+Ran 71 tests in 73.672s
+
+FAILED (failures=10, errors=7)

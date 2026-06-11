@@ -129,7 +129,7 @@ log_audit() {
     local details="$2"
     local log_file="${3:-$LOGGER_DEFAULT_LOG}"
 
-    log_info "AUDIT" "[${action}] ${details}"
+    log_info "AUDIT" "[${action}] ${details}" "$log_file"
 }
 
 # ═══════════════════════════════════════════════════════════════
