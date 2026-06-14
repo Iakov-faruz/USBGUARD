@@ -191,24 +191,126 @@ check_rule_duplicate() {
 
     if [[ ! -d "$rules_dir" ]]; then
         log_debug "VALIDATOR" "Rules directory does not exist (yet): $rules_dir"
-        return 0  # No duplicates possible
+        return 0
     fi
 
-    # Extract the rule content (remove comments, trim whitespace)
     local rule_core
-    rule_core=$(echo "$rule" | sed 's/#.*$//' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+    rule_core=$(python3 - "$rule" "$rules_dir" <<'PY'
+import sys
+from pathlib import Path
 
-    if [[ -z "$rule_core" ]]; then
-        return 2  # Empty rule after stripping comments
+def strip_comment(line):
+    out = []
+    in_quote = False
+    escape = False
+    for ch in line:
+        if escape:
+            out.append(ch)
+            escape = False
+            continue
+        if in_quote and ch == '\\':
+            out.append(ch)
+            escape = True
+            continue
+        if ch == '"':
+            in_quote = not in_quote
+            out.append(ch)
+            continue
+        if ch == '#' and not in_quote:
+            break
+        out.append(ch)
+    return ''.join(out).strip()
+
+def tokens(line):
+    result = []
+    cur = []
+    in_quote = False
+    escape = False
+    for ch in line:
+        if escape:
+            cur.append(ch)
+            escape = False
+            continue
+        if in_quote and ch == '\\':
+            cur.append(ch)
+            escape = True
+            continue
+        if ch == '"':
+            in_quote = not in_quote
+            cur.append(ch)
+            continue
+        if ch.isspace() and not in_quote:
+            if cur:
+                result.append(''.join(cur))
+                cur = []
+            continue
+        cur.append(ch)
+    if cur:
+        result.append(''.join(cur))
+    return result
+
+def normalize_interface(value):
+    if value.startswith('{') and value.endswith('}'):
+        return '{' + ','.join(sorted(value[1:-1].split(','))) + '}'
+    return value
+
+def signature(rule_line):
+    attrs = {}
+    toks = tokens(strip_comment(rule_line))
+    if not toks or toks[0] not in ('allow', 'block'):
+        return None
+    attrs['action'] = toks[0]
+    i = 1
+    while i < len(toks):
+        key = toks[i]
+        if key in ('id', 'serial', 'name', 'hash', 'with-interface'):
+            if key == 'with-interface':
+                i += 1
+                value = toks[i] if i < len(toks) else ''
+                if value.startswith('{'):
+                    parts = [value]
+                    while i + 1 < len(toks) and not value.endswith('}'):
+                        i += 1
+                        value += ' ' + toks[i]
+                        parts.append(toks[i])
+                    value = ''.join(parts)
+                attrs[key] = normalize_interface(value)
+            else:
+                i += 1
+                attrs[key] = toks[i] if i < len(toks) else ''
+        i += 1
+    return tuple(attrs.get(k, '') for k in ('action', 'id', 'serial', 'name', 'hash', 'with-interface'))
+
+rule = sys.argv[1]
+rules_dir = Path(sys.argv[2])
+wanted = signature(rule)
+if wanted is None:
+    print('invalid')
+    raise SystemExit(2)
+for path in sorted(rules_dir.glob('*.rules')):
+    try:
+        lines = path.read_text(errors='replace').splitlines()
+    except OSError:
+        continue
+    for line in lines:
+        existing = signature(line)
+        if existing is not None and existing == wanted:
+            print(path.name)
+            raise SystemExit(0)
+print('')
+raise SystemExit(1)
+PY
+)
+    local rc=$?
+    if [[ "$rule_core" == "invalid" ]]; then
+        log_error "VALIDATOR" "check_rule_duplicate: invalid rule: ${rule}"
+        return 2
     fi
-
-    # Search for duplicates across all .rules files
-    if grep -Fqs "$rule_core" "${rules_dir}"/*.rules 2>/dev/null; then
+    if [[ $rc -eq 0 ]]; then
         log_info "VALIDATOR" "Duplicate rule found: ${rule_core} in ${rules_dir}"
-        return 0  # Duplicate exists
+        return 0
     fi
-
-    return 1  # No duplicate
+    return 1
 }
 
 # ═══════════════════════════════════════════════════════════════

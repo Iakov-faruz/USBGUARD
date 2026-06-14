@@ -3,6 +3,7 @@
 # USBGuard Integration Test Suite – Full Active Test
 # ============================================================
 PASS=0; FAIL=0; WARN=0
+sudo -n true >/dev/null 2>&1 || { echo "run_tests.sh requires passwordless sudo privileges"; exit 1; }
 LOG="/tmp/usbguard_test_$(date +%Y%m%d_%H%M%S).log"
 exec > >(tee -a "$LOG") 2>&1
 
@@ -25,15 +26,15 @@ done
 
 sep "TEST 2: קובצי Rules – תחביר ותוכן"
 for f in /etc/usbguard/rules.d/00-system.rules /etc/usbguard/rules.d/50-permanent.rules /etc/usbguard/rules.d/90-temporary.rules; do
-    if [[ -f "$f" ]]; then
-        perm=$(stat -c "%a" "$f")
+    if sudo test -f "$f"; then
+        perm=$(sudo stat -c "%a" "$f")
         if [[ "$perm" == "600" ]]; then
             ok "$f – הרשאות $perm"
         else
             warn "$f – הרשאות $perm (מצופה 600)"
         fi
         # בדיקת תחביר – שאין שורות שמתחילות ב-# ומיד ממשיכות ל-allow (ללא newline)
-        if grep -qP '^#.*\nallow' "$f" 2>/dev/null; then
+        if sudo grep -qP '^#.*\nallow' "$f" 2>/dev/null; then
             fail "$f – נמצא תחביר שבור (הערה ללא ירידת שורה)"
         fi
     else
@@ -53,7 +54,7 @@ fi
 
 sep "TEST 4: API Web – GET /api/status"
 status_resp=$(curl -s --max-time 5 http://127.0.0.1:5000/api/status 2>&1)
-if echo "$status_resp" | grep -qi "daemon_running\|status\|running"; then
+if echo "$status_resp" | grep -qi "daemon_active\|daemon_running\|status\|running"; then
     ok "/api/status מגיב"
     echo "$status_resp" | python3 -m json.tool 2>/dev/null || echo "$status_resp"
 else
@@ -134,7 +135,7 @@ else
     info "מאשר התקן $API_DEV דרך POST /api/approve"
     approve_api=$(curl -s -X POST http://127.0.0.1:5000/api/approve \
         -H "Content-Type: application/json" \
-        -d "{\"device_id\":\"$API_DEV\",\"type\":\"permanent\"}" 2>&1)
+        -d "{\"device_id\":\"$API_DEV\",\"type\":\"P\"}" 2>&1)
     if echo "$approve_api" | grep -qi "success\|approved\|ok"; then
         ok "POST /api/approve הצליח"
     else
@@ -144,22 +145,22 @@ fi
 
 sep "TEST 10: לוג ראשי – usbguard-approval.log"
 if [[ -f "/var/log/usbguard-approval.log" ]]; then
-    lines=$(wc -l < /var/log/usbguard-approval.log)
+    lines=$(sudo sh -c 'wc -l < "$1"' _ "/var/log/usbguard-approval.log" | awk '{print $1}')
     ok "לוג ראשי קיים ($lines שורות)"
-    tail -5 /var/log/usbguard-approval.log
+    sudo tail -5 /var/log/usbguard-approval.log
 else
     warn "לוג ראשי לא נמצא – ייתכן שעדיין לא נרשמה פעולה"
 fi
 
 sep "TEST 11: לוג Audit – usbguard-audit.log"
 if [[ -f "/var/log/usbguard/usbguard-audit.log" ]]; then
-    a_lines=$(wc -l < /var/log/usbguard/usbguard-audit.log)
+    a_lines=$(sudo sh -c 'wc -l < "$1"' _ "/var/log/usbguard/usbguard-audit.log" | awk '{print $1}')
     ok "Audit log קיים ($a_lines שורות)"
-    tail -5 /var/log/usbguard/usbguard-audit.log
+    sudo tail -5 /var/log/usbguard/usbguard-audit.log
 elif [[ -f "/var/log/usbguard-audit.log" ]]; then
-    a_lines=$(wc -l < /var/log/usbguard-audit.log)
+    a_lines=$(sudo sh -c 'wc -l < "$1"' _ "/var/log/usbguard-audit.log" | awk '{print $1}')
     ok "Audit log קיים ($a_lines שורות)"
-    tail -5 /var/log/usbguard-audit.log
+    sudo tail -5 /var/log/usbguard-audit.log
 else
     warn "Audit log לא נמצא"
 fi
@@ -188,7 +189,7 @@ fi
 
 sep "TEST 15: TTL Reaper – cleanup-expired.sh"
 if [[ -x "/etc/usbguard/scripts/cleanup-expired.sh" ]]; then
-    cleanup_out=$(bash /etc/usbguard/scripts/cleanup-expired.sh 2>&1)
+    cleanup_out=$(sudo bash /etc/usbguard/scripts/cleanup-expired.sh 2>&1)
     ok "cleanup-expired.sh הורץ בהצלחה"
     echo "$cleanup_out"
 else
@@ -197,7 +198,7 @@ fi
 
 sep "TEST 16: Check-Config"
 if [[ -x "/etc/usbguard/scripts/check-config.sh" ]]; then
-    cc_out=$(bash /etc/usbguard/scripts/check-config.sh 2>&1)
+    cc_out=$(sudo bash /etc/usbguard/scripts/check-config.sh 2>&1)
     ok "check-config.sh הורץ"
     echo "$cc_out"
 else

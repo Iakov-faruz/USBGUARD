@@ -49,11 +49,26 @@ logging.basicConfig(
     level=log_level,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('/var/log/usbguard-web.log'),
         logging.StreamHandler()
     ]
 )
 logger = logging.getLogger(__name__)
+
+
+def setup_file_logging(log_file='/var/log/usbguard-web.log'):
+    """Attach web log file when daemon has write permission."""
+    if any(isinstance(handler, logging.FileHandler) and getattr(handler, 'baseFilename', None) == log_file for handler in logger.handlers):
+        return True
+    try:
+        file_handler = logging.FileHandler(log_file)
+    except PermissionError:
+        logger.warning(f"Cannot write to web log file: {log_file}")
+        return False
+    file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+    logger.addHandler(file_handler)
+    return True
+
+setup_file_logging()
 
 app = Flask(__name__)
 
@@ -181,6 +196,9 @@ def run_command(cmd, shell=False):
     - DEBUG mode: Full error details returned to client
     - Production: Generic errors only, details in logs
     """
+    if os.geteuid() == 0 and isinstance(cmd, list) and len(cmd) > 0 and cmd[0] == "sudo":
+        cmd = cmd[1:]
+
     try:
         res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, shell=shell, timeout=15)
         

@@ -35,6 +35,7 @@ AWK_STDERR=""
 _cleanup_temp() {
     [[ -n "$TMP_FILE" ]] && rm -f "$TMP_FILE" 2>/dev/null
     [[ -n "$AWK_STDERR" ]] && rm -f "$AWK_STDERR" 2>/dev/null
+    return 0
 }
 trap '_cleanup_temp' EXIT
 

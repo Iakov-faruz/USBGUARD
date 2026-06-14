@@ -67,11 +67,13 @@ run_cmd() {
         echo -e "${COLOR_YELLOW}  [DRY-RUN] Would execute:${COLOR_RESET} $*"
         return 0
     fi
-    "$@" 2>&1 | tee -a "$INSTALL_LOG" || {
-        local rc=$?
+    "$@" 2>&1 | tee -a "$INSTALL_LOG"
+    local rc=${PIPESTATUS[0]}
+    if [[ $rc -ne 0 ]]; then
         log_error "Command failed (rc=$rc): $*"
-        return $rc
-    }
+        return "$rc"
+    fi
+    return 0
 }
 
 verify_file() {
@@ -129,6 +131,7 @@ preflight_checks() {
         "$SCRIPT_DIR/rules.d/90-temporary.rules"
         "$SCRIPT_DIR/scripts/usb-approve.sh"
         "$SCRIPT_DIR/scripts/cleanup-expired.sh"
+        "$SCRIPT_DIR/scripts/badusb-monitor.py"
         "$SCRIPT_DIR/scripts/backup-rules.sh"
         "$SCRIPT_DIR/scripts/import-rules.sh"
         "$SCRIPT_DIR/scripts/export-rules.sh"
@@ -185,12 +188,14 @@ install_system_packages() {
     local packages=(
         usbguard
         whiptail
+        curl
         gawk
         util-linux
         tar
         gzip
         systemd
         python3
+        python3-venv
         python3-pip
         python3-evdev
         python3-flask
@@ -251,7 +256,7 @@ install_system_packages() {
         log_ok "python3-usbguard installed via apt"
     else
         log_warn "python3-usbguard not in apt repos, trying pip..."
-        if pip3 install usbguard 2>/dev/null; then
+        if pip3 install --break-system-packages usbguard 2>/dev/null; then
             log_ok "python3-usbguard installed via pip"
         else
             log_warn "Could not install python3-usbguard. The web interface will fall back to subprocess."
@@ -260,7 +265,7 @@ install_system_packages() {
     
     # Install Flask-Limiter
     log_info "Installing Python web dependencies..."
-    pip3 install flask-limiter 2>/dev/null || log_warn "flask-limiter not installed (rate limiting disabled)"
+    pip3 install --break-system-packages flask-limiter 2>/dev/null || log_warn "flask-limiter not installed (rate limiting disabled)"
     
     # Try to sync time
     ntpdate ntp.ubuntu.com 2>/dev/null || log_warn "Time sync skipped (NTP unavailable)"
@@ -354,6 +359,8 @@ deploy_files() {
         run_cmd chmod 600 "/etc/usbguard/rules.d/$rule"
         run_cmd chown root:root "/etc/usbguard/rules.d/$rule"
     done
+    run_cmd chmod 750 "/etc/usbguard/rules.d"
+    run_cmd chown root:usbadmins "/etc/usbguard/rules.d"
     
     # ── Main scripts ──────────────────────────────────────────────
     log_info "Deploying main scripts..."
@@ -389,6 +396,9 @@ deploy_files() {
         backup.sh
         time-guards.sh
         validators.sh
+        stages-core.sh
+        stages-io.sh
+        device-utils.sh
     )
     
     for lib in "${lib_files[@]}"; do
@@ -413,10 +423,10 @@ deploy_files() {
     
     # Copy static files
     if [[ -d "$SCRIPT_DIR/web/static" ]]; then
-        run_cmd cp -r "$SCRIPT_DIR/web/static/"* "/etc/usbguard/web/static/"
+        run_cmd cp -R "$SCRIPT_DIR/web/static/." "/etc/usbguard/web/static/"
     fi
     if [[ -d "$SCRIPT_DIR/web/templates" ]]; then
-        run_cmd cp -r "$SCRIPT_DIR/web/templates/"* "/etc/usbguard/web/templates/"
+        run_cmd cp -R "$SCRIPT_DIR/web/templates/." "/etc/usbguard/web/templates/"
     fi
     
     run_cmd chown -R root:usbadmins "/etc/usbguard/web"
@@ -454,14 +464,19 @@ install_services() {
     log_info "Enabling and starting services..."
     
     run_cmd systemctl enable --now usbguard || log_warn "Could not enable usbguard (already running?)"
+    run_cmd systemctl restart usbguard || log_warn "Could not restart usbguard"
     sleep 2
     
     run_cmd systemctl enable --now usbguard-ttl-reaper.timer || log_warn "Could not enable TTL reaper timer"
-    run_cmd systemctl enable usbguard-web.service || log_warn "Could not enable web service"
+    run_cmd systemctl restart usbguard-ttl-reaper.service || true
+    run_cmd systemctl restart usbguard-ttl-reaper.timer || true
+    run_cmd systemctl enable --now usbguard-web.service || log_warn "Could not enable/start web service"
+    run_cmd systemctl restart usbguard-web.service || log_warn "Could not restart web service"
     
     # Enable behavioral service if the file exists
     if [[ -f "/etc/systemd/system/usbguard-behavioral.service" ]]; then
-        run_cmd systemctl enable usbguard-behavioral.service || log_warn "Could not enable behavioral monitor"
+        run_cmd systemctl enable --now usbguard-behavioral.service || log_warn "Could not enable/start behavioral monitor"
+        run_cmd systemctl restart usbguard-behavioral.service || log_warn "Could not restart behavioral monitor"
     fi
     
     log_ok "Services configured"

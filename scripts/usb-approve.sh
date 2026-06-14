@@ -67,30 +67,25 @@ main() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --list-rules)
-                echo "{"
-                for cat in system permanent temporary; do
-                    local filepath=""
-                    case "$cat" in
-                        system) filepath="$RULES_SYSTEM" ;;
-                        permanent) filepath="$RULES_PERMANENT" ;;
-                        temporary) filepath="$RULES_TEMPORARY" ;;
-                    esac
-                    echo "  \"$cat\": ["
-                    if [[ -f "$filepath" ]]; then
-                        local first=true
-                        while IFS= read -r line || [[ -n "$line" ]]; do
-                            line=$(echo "$line" | xargs)
-                            [[ -z "$line" ]] && continue
-                            local escaped_line=$(echo "$line" | sed 's/"/\\"/g')
-                            [[ "$first" == "true" ]] && first=false || echo ","
-                            echo -n "    \"$escaped_line\""
-                        done < "$filepath"
-                        echo ""
-                    fi
-                    echo -n "  ]"
-                    [[ "$cat" != "temporary" ]] && echo "," || echo ""
-                done
-                echo "}"
+                python3 - <<PY
+import json
+from pathlib import Path
+paths = {
+    'system': Path('$RULES_SYSTEM'),
+    'permanent': Path('$RULES_PERMANENT'),
+    'temporary': Path('$RULES_TEMPORARY'),
+}
+result = {}
+for category, path in paths.items():
+    lines = []
+    if path.exists():
+        for line in path.read_text(errors='replace').splitlines():
+            stripped = line.strip()
+            if stripped:
+                lines.append(stripped)
+    result[category] = lines
+print(json.dumps(result, ensure_ascii=False, indent=2))
+PY
                 exit 0
                 ;;
             --device|-d)

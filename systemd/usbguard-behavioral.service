@@ -13,7 +13,7 @@ ExecStart=/etc/usbguard/scripts/badusb-monitor.py
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=5
-PIDFile=/var/run/usbguard-badusb.pid
+PIDFile=/run/usbguard-badusb.pid
 
 # Security hardening
 NoNewPrivileges=true

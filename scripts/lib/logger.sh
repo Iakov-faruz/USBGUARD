@@ -10,6 +10,8 @@
 # ─── Default Configuration ────────────────────────────────────
 readonly LOGGER_DEFAULT_LOG="/var/log/usbguard-approval.log"
 readonly LOGGER_DEFAULT_LEVEL="INFO"
+LOGGER_INITIALIZED=0
+LOGGER_ACTIVE_LOG="$LOGGER_DEFAULT_LOG"
 
 # ─── Log Levels (numeric) ─────────────────────────────────────
 readonly LOG_LEVEL_DEBUG=0
@@ -56,7 +58,11 @@ _log() {
     local level="$1"
     local component="$2"
     local message="$3"
-    local log_file="${4:-$LOGGER_DEFAULT_LOG}"
+    local log_file="${4:-$LOGGER_ACTIVE_LOG}"
+    if [[ "${LOGGER_INITIALIZED:-0}" -ne 1 ]]; then
+        return 0
+    fi
+
     local user="${5:-$(whoami 2>/dev/null || echo 'unknown')}"
 
     # ── Skip DEBUG if LOG_LEVEL is higher ──────────────────────
@@ -133,7 +139,7 @@ log_critical() {
 log_audit() {
     local action="$1"        # APPROVE | CLEANUP | ROLLBACK | BACKUP | RESTORE | DENIED
     local details="$2"
-    local log_file="${3:-$LOGGER_DEFAULT_LOG}"
+    local log_file="${3:-$LOGGER_ACTIVE_LOG}"
 
     log_info "AUDIT" "[${action}] ${details}" "$log_file"
 }
@@ -163,6 +169,7 @@ init_logger() {
     local log_file="${1:-$LOGGER_DEFAULT_LOG}"
     local log_dir
 
+    LOGGER_ACTIVE_LOG="$log_file"
     log_dir=$(dirname "$log_file" 2>/dev/null)
 
     if [[ ! -d "$log_dir" ]]; then
@@ -182,6 +189,12 @@ init_logger() {
     # Both root (systemd timer) and usbadmins group (TUI via sudo) must write
     chown root:usbadmins "$log_file" 2>/dev/null || true
     chmod 660 "$log_file" 2>/dev/null || true
+    LOGGER_INITIALIZED=1
+
+    if [[ "$log_file" == "$LOGGER_DEFAULT_LOG" ]] && [[ ! -w "$log_file" ]]; then
+        echo "WARN: Logger not writable: $log_file" >&2
+        return 0
+    fi
 
     log_info "LOGGER" "Logger initialized (log file: ${log_file})"
 }

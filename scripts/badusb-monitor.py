@@ -35,18 +35,27 @@ EPS_WINDOW_SEC = 1.0       # חלון זמן למדידת EPS
 SCAN_INTERVAL_SEC = 1.0    # תדירות סריקת התקנים חדשים
 COOLDOWN_SEC = 30          # זמן צינון לפני דיווח חוזר על אותו VidPid
 LOG_FILE = "/var/log/usbguard-badusb.log"
-PID_FILE = "/var/run/usbguard-badusb.pid"
+PID_FILE = "/run/usbguard-badusb.pid"
 
 # ─── Logger Setup ─────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler(LOG_FILE),
         logging.StreamHandler()
     ]
 )
 logger = logging.getLogger("badusb-monitor")
+
+
+def setup_logging():
+    """Configure file logging for daemon execution."""
+    if any(isinstance(handler, logging.FileHandler) and getattr(handler, 'baseFilename', None) == LOG_FILE for handler in logger.handlers):
+        return
+    file_handler = logging.FileHandler(LOG_FILE)
+    file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+    logger.addHandler(file_handler)
+    logger.setLevel(logging.INFO)
 
 # ─── Global State ─────────────────────────────────────────────────────────────
 running = True
@@ -212,6 +221,7 @@ def block_device(vid_pid):
 def monitor_loop():
     """Main loop: monitor HID devices for anomalous behavior."""
     global running
+    setup_logging()
     
     logger.info("BadUSB Behavioral Monitor started")
     logger.info(f"EPS Threshold: {EPS_THRESHOLD}, Window: {EPS_WINDOW_SEC}s")
