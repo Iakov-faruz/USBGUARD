@@ -61,7 +61,11 @@ _log() {
 
     # ── Skip DEBUG if LOG_LEVEL is higher ──────────────────────
     local config_level_name
-    config_level_name=$(get_conf "LOG_LEVEL" 2>/dev/null || echo "$LOGGER_DEFAULT_LEVEL")
+    if declare -F get_conf >/dev/null 2>&1; then
+        config_level_name=$(get_conf "LOG_LEVEL" 2>/dev/null || echo "$LOGGER_DEFAULT_LEVEL")
+    else
+        config_level_name="$LOGGER_DEFAULT_LEVEL"
+    fi
     local config_level_num
     config_level_num=$(_get_log_level_num "$config_level_name")
     local msg_level_num
@@ -93,6 +97,8 @@ _log() {
     # ── Also output to stderr for ERROR and above ─────────────
     if [[ $level -ge $LOG_LEVEL_ERROR ]]; then
         echo "$log_line" >&2
+    elif [[ -t 1 ]]; then
+        echo "$log_line"
     fi
 }
 

@@ -29,7 +29,7 @@ import signal
 from collections import defaultdict
 
 # ─── Configuration ─────────────────────────────────────────────────────────────
-API_BLOCK_URL = "http://127.0.0.1:5000/api/block"
+API_BLOCK_URL = "http://localhost:5000/api/block"
 EPS_THRESHOLD = 20         # סף אירועים לשנייה
 EPS_WINDOW_SEC = 1.0       # חלון זמן למדידת EPS
 SCAN_INTERVAL_SEC = 1.0    # תדירות סריקת התקנים חדשים

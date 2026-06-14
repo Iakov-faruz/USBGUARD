@@ -1,0 +1,239 @@
+הבנתי אותך לגמרי — אתה רוצה **רשימת בדיקות מלאה, נקייה, מסודרת, חד‑משמעית**, שאפשר להריץ *ישירות בתוך ה‑VM*, בלי SSH, בלי quoting שבור, בלי הפתעות.
+
+אז הנה זה:  
+# 🎯 **ה‑MASTER CHECKLIST**  
+בדיקות מלאות, מההתחלה ועד הסוף, כולל כל מה שעשינו עד עכשיו — מסודר, נקי, וקל להרצה.
+
+---
+
+# ✅ **0. מעבר לתיקיית הפרויקט**
+```bash
+cd /home/yp/USBGUARD2
+pwd
+```
+
+---
+
+# ✅ **1. בדיקת Bash בסיסית**
+```bash
+whoami
+hostname
+uname -a
+df -h /
+```
+
+---
+
+# ✅ **2. בדיקת מבנה הפרויקט**
+```bash
+find . -maxdepth 3 -type f | sort
+```
+
+בדיקות קריטיות:
+```bash
+test -f scripts/lib/logger.sh
+test -f scripts/lib/config-reader.sh
+test -f scripts/usb-approve.sh
+test -f web/app.py
+test -f scripts/badusb-monitor.py
+```
+
+---
+
+# ✅ **3. בדיקת תקינות כל סקריפטי Bash**
+```bash
+bash -n scripts/lib/logger.sh
+bash -n scripts/lib/config-reader.sh
+bash -n scripts/usb-approve.sh
+bash -n scripts/cleanup-expired.sh
+bash -n scripts/backup-rules.sh
+bash -n scripts/restore-rules.sh
+bash -n scripts/import-rules.sh
+bash -n scripts/export-rules.sh
+bash -n scripts/check-config.sh
+bash -n scripts/usbguard-status.sh
+```
+
+---
+
+# ✅ **4. בדיקת תקינות קבצי Python**
+```bash
+python3 -m py_compile web/app.py
+python3 -m py_compile scripts/badusb-monitor.py
+```
+
+---
+
+# ✅ **5. בדיקת config-reader (ערך תקין)**
+```bash
+tmp=$(mktemp)
+printf 'KEY=plain\n' > "$tmp"
+source scripts/lib/config-reader.sh
+value=$(get_conf KEY "$tmp")
+rc=$?
+rm -f "$tmp"
+echo "config_reader_valid_rc=$rc value=$value"
+```
+
+פלט תקין:
+```
+config_reader_valid_rc=0 value=plain
+```
+
+---
+
+# ✅ **6. בדיקת config-reader (חסימת ; זדוני)**
+```bash
+tmp=$(mktemp)
+printf 'KEY=value; rm -rf /\n' > "$tmp"
+source scripts/lib/config-reader.sh
+if get_conf KEY "$tmp"; then
+  echo "config_reader_dangerous=FAIL"
+else
+  echo "config_reader_dangerous=OK"
+fi
+rm -f "$tmp"
+```
+
+פלט תקין:
+```
+config_reader_dangerous=OK
+```
+
+---
+
+# ✅ **7. בדיקת logger (הכי חשוב!)**
+```bash
+tmp=$(mktemp)
+source scripts/lib/logger.sh
+init_logger "$tmp"
+log_info TEST hello
+echo "--- LOG CONTENT ---"
+cat "$tmp"
+rm -f "$tmp"
+```
+
+פלט תקין:
+```
+[INFO] TEST hello
+```
+
+---
+
+# ✅ **8. בדיקת rules.d**
+```bash
+ls -l rules.d/
+grep -n "allow id" rules.d/00-system.rules
+grep -n "allow with-interface" rules.d/00-system.rules || echo "OK: no invalid allow-without-id"
+```
+
+---
+
+# ✅ **9. בדיקת BadUSB monitor**
+```bash
+grep -n "API_BLOCK_URL" scripts/badusb-monitor.py
+```
+
+בדיקת טעינה:
+```bash
+python3 - <<'PY'
+import importlib.util
+spec = importlib.util.spec_from_file_location('badusb', 'scripts/badusb-monitor.py')
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+print("API_BLOCK_URL =", mod.API_BLOCK_URL)
+assert "localhost" in mod.API_BLOCK_URL or "127.0.0.1" in mod.API_BLOCK_URL
+PY
+```
+
+---
+
+# ✅ **10. בדיקות יחידה בסיסיות**
+```bash
+python3 -m unittest unit_test.test_debug -v
+python3 -m unittest unit_test.test_badusb_monitor -v
+```
+
+---
+
+# ✅ **11. בדיקות pytest (אם מותקן)**
+```bash
+pytest -q
+```
+
+---
+
+# ✅ **12. בדיקת תלויות Python**
+```bash
+for pkg in flask flask_limiter evdev usbguard requests yaml pytest; do
+    python3 -c "import $pkg" 2>/dev/null && echo "$pkg: OK" || echo "$pkg: MISSING"
+done
+```
+
+אם חסר משהו:
+```bash
+sudo pip3 install flask flask-limiter evdev usbguard requests pyyaml pytest
+```
+
+---
+
+# ✅ **13. בדיקת install.sh (dry-run)**
+```bash
+sudo ./install.sh --dry-run --force
+```
+
+---
+
+# ✅ **14. התקנה מלאה**
+```bash
+sudo ./install.sh --force
+```
+
+---
+
+# ✅ **15. בדיקת systemd אחרי התקנה**
+```bash
+systemctl status usbguard --no-pager
+systemctl status usbguard-web.service --no-pager
+systemctl status usbguard-behavioral.service --no-pager
+systemctl status usbguard-ttl-reaper.timer --no-pager
+```
+
+---
+
+# ✅ **16. בדיקת קבצים ב־/etc**
+```bash
+ls -l /etc/usbguard/
+ls -l /etc/usbguard/scripts/
+ls -l /etc/usbguard/scripts/lib/
+ls -l /etc/usbguard/rules.d/
+ls -l /etc/systemd/system/ | grep usbguard
+```
+
+---
+
+# ✅ **17. בדיקת לוגים**
+```bash
+ls -l /var/log/usbguard-*.log
+tail -20 /var/log/usbguard-approval.log
+tail -20 /var/log/usbguard-badusb.log
+tail -20 /var/log/usbguard-web.log
+```
+
+---
+
+# ✅ **18. בדיקת API**
+```bash
+curl -s http://127.0.0.1:5000/api/status
+curl -s http://127.0.0.1:5000/api/devices
+curl -s http://127.0.0.1:5000/api/rules
+```
+
+
+
+Command
+ssh -o BatchMode=yes -o StrictHostKeyChecking=no yp@10.9.176.77 'cd /home/yp/USBGUARD2 && bash -lc "source scripts/lib/logger.sh; echo SOURCE_OK; declare -F log_info"'
+Output
+scripts/lib/logger.sh: line 1: source: filename argument required
+source: usage: source filename [arguments]
+SOURCE_OK

@@ -233,7 +233,7 @@ class TestBlockDevice(unittest.TestCase):
         """HTTP error should return False gracefully."""
         import urllib.error
         mock_urlopen.side_effect = urllib.error.HTTPError(
-            url="http://127.0.0.1:5000/api/block",
+            url="http://localhost:5000/api/block",
             code=500, msg="Server Error", hdrs=None, fp=None
         )
 

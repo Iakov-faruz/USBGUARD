@@ -60,6 +60,31 @@ web/templates/**/__pycache__/
 web/static/js/*.map
 web/static/css/*.map
 
+# --- Archives / Tarballs ---
+*.tar.gz
+*.tgz
+
+# --- Test artifacts ---
+.pytest_cache/
+htmlcov/
+.coverage
+coverage.xml
+.tox/
+.mypy_cache/
+
+# --- Environment files ---
+.env
+.env.*
+!.env.example
+
+# --- Process ID files ---
+*.pid
+
+# --- Local databases ---
+*.db
+*.sqlite3
+*.sqlite
+
 # --- Git internal safety ---
 *.rej
 *.patch

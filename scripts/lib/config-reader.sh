@@ -13,7 +13,7 @@ readonly CONFIG_READER_DEFAULT_CONF="/etc/usbguard/approval-manager.conf"
 
 # ─── Dangerous Characters Filter ──────────────────────────────
 # תווים אסורים בערכי קונפיג (shell special chars)
-readonly CONFIG_READER_FORBIDDEN_CHARS='[]$`;|&<>(){}[!]'
+readonly CONFIG_READER_FORBIDDEN_CHARS='[$`|&<>(){}\[\]!]'
 
 # ═══════════════════════════════════════════════════════════════
 # פונקציה: get_conf
@@ -106,7 +106,7 @@ get_conf() {
         value="${value%"${value##*[![:space:]]}"}"
 
         # ── בדיקת תווים מסוכנים ─────────────────────────────────
-        if echo "$value" | grep -qE "$CONFIG_READER_FORBIDDEN_CHARS" 2>/dev/null; then
+        if [[ "$value" == *";"* ]] || echo "$value" | grep -qE "$CONFIG_READER_FORBIDDEN_CHARS" 2>/dev/null; then
             echo "ERROR: [config-reader] Dangerous characters detected in value for '$key'" >&2
             return 1
         fi
@@ -273,7 +273,7 @@ validate_config_file() {
         v="${v#"${v%%[![:space:]]*}"}"
 
         # בדיקת תווים מסוכנים ב-VALUE
-        if echo "$v" | grep -qE "$CONFIG_READER_FORBIDDEN_CHARS" 2>/dev/null; then
+        if [[ "$v" == *";"* ]] || echo "$v" | grep -qE "$CONFIG_READER_FORBIDDEN_CHARS" 2>/dev/null; then
             echo "ERROR:${config_file}:${line_num}: Dangerous characters in VALUE"
             ((errors++))
         fi
