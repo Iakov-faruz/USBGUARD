@@ -1,5 +1,13 @@
+# /etc/sudoers.d/usbguard-approval
+# USBGuard Approval Manager - Sudoers Authorization
+
 Cmnd_Alias USBGUARD_APPROVE=/etc/usbguard/scripts/usb-approve.sh
 Cmnd_Alias USBGUARD_BACKUP=/etc/usbguard/scripts/backup-rules.sh
 Cmnd_Alias USBGUARD_RESTORE=/etc/usbguard/scripts/restore-rules.sh
+Cmnd_Alias USBGUARD_IMPORT=/etc/usbguard/scripts/import-rules.sh
+Cmnd_Alias USBGUARD_EXPORT=/etc/usbguard/scripts/export-rules.sh
+Cmnd_Alias USBGUARD_HEALTHCHECK=/etc/usbguard/scripts/healthcheck.sh
+Cmnd_Alias USBGUARD_NETWORK=/etc/usbguard/scripts/network-lockdown.sh
+Cmnd_Alias USBGUARD_MASS_STORAGE=/etc/usbguard/scripts/usb-mass-storage-handler.sh
 
-%usbadmins ALL=(root) NOPASSWD: USBGUARD_APPROVE, USBGUARD_BACKUP, USBGUARD_RESTORE
+%usbadmins ALL=(root) NOPASSWD: USBGUARD_APPROVE, USBGUARD_BACKUP, USBGUARD_RESTORE, USBGUARD_IMPORT, USBGUARD_EXPORT, USBGUARD_HEALTHCHECK, USBGUARD_NETWORK, USBGUARD_MASS_STORAGE

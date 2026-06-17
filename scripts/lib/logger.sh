@@ -1,200 +1,142 @@
 #!/usr/bin/env bash
-# ═══════════════════════════════════════════════════════════════
-# USBGuard Approval Manager - Audit Logger
-# Version: 2.2
-# ═══════════════════════════════════════════════════════════════
-# מערכת לוג מרכזית עם 5 רמות + audit trail
-# פורמט: [YYYY-MM-DD HH:MM:SS] [LEVEL] [USER] [COMPONENT] MESSAGE
-# ═══════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════
+# USBGuard Approval Manager – Audit Logger
+# Version: 3.2.1 (Zero‑Subprocess, Structured, Production‑Grade)
+# ════════════════════════════════════════════════════════════════════════
+#
+# תכונות ליבה:
+#   • Zero‑Subprocess (ללא tr/awk/sed/grep) - ביצועים מקסימליים.
+#   • Early-Exit חכם - מניעת הרצת פקודות מערכת (whoami) כשהלוגר כבוי.
+#   • תאימות אבטחה מורחבת ל-Syslog (כולל Priority מותאם ו-Component בטאג).
+#   • ניהול הרשאות קשיח (chmod 660, root:usbadmins).
+#   • פורמט מובנה: [TIMESTAMP] [LEVEL] [USER] [COMPONENT] MESSAGE
+#
+# דרישות מערכת:
+#   • Bash גרסה 4.2 ומעלה (עבור מנגנון ה-Timestamp המובנה ב-printf).
+#     בגרסאות ישנות יותר, המערכת תבצע Fallback אוטומטי לפקודת date.
+#
+# ════════════════════════════════════════════════════════════════════════
 
-# ─── Default Configuration ────────────────────────────────────
 readonly LOGGER_DEFAULT_LOG="/var/log/usbguard-approval.log"
-readonly LOGGER_DEFAULT_LEVEL="INFO"
 LOGGER_INITIALIZED=0
 LOGGER_ACTIVE_LOG="$LOGGER_DEFAULT_LOG"
 
-# ─── Log Levels (numeric) ─────────────────────────────────────
+# ─── רמות לוג מספריות (להשוואה מהירה בזיכרון) ──────────────────────────
 readonly LOG_LEVEL_DEBUG=0
 readonly LOG_LEVEL_INFO=1
 readonly LOG_LEVEL_WARN=2
 readonly LOG_LEVEL_ERROR=3
 readonly LOG_LEVEL_CRITICAL=4
 
-# ─── Level Names ──────────────────────────────────────────────
-_log_level_name() {
-    local level="$1"
-    case "$level" in
-        "$LOG_LEVEL_DEBUG")    echo "DEBUG" ;;
-        "$LOG_LEVEL_INFO")     echo "INFO" ;;
-        "$LOG_LEVEL_WARN")     echo "WARN" ;;
-        "$LOG_LEVEL_ERROR")    echo "ERROR" ;;
-        "$LOG_LEVEL_CRITICAL") echo "CRITICAL" ;;
-        *)                     echo "UNKNOWN" ;;
-    esac
-}
-
-# ═══════════════════════════════════════════════════════════════
+# ───────────────────────────────────────────────────────────────────────
 # פונקציה: _get_log_level_num
-# תפקיד: המרת רמת לוג טקסטואלית למספר
-# ═══════════════════════════════════════════════════════════════
+# תפקיד: המרת שם רמה מטקסט (מהקונפיג) למספר (ללא Subprocess)
+# ───────────────────────────────────────────────────────────────────────
 _get_log_level_num() {
-    local level_name
-    level_name=$(echo "$1" | tr '[:upper:]' '[:lower:]')
-    case "$level_name" in
+    case "${1,,}" in
         debug)    echo "$LOG_LEVEL_DEBUG" ;;
         info)     echo "$LOG_LEVEL_INFO" ;;
         warn)     echo "$LOG_LEVEL_WARN" ;;
         error)    echo "$LOG_LEVEL_ERROR" ;;
         critical) echo "$LOG_LEVEL_CRITICAL" ;;
-        *)        echo "$LOG_LEVEL_INFO" ;;
+        *)        echo "$LOG_LEVEL_INFO" ;; # ברירת מחדל במקרה של ערך שגוי
     esac
 }
 
-# ═══════════════════════════════════════════════════════════════
+# ───────────────────────────────────────────────────────────────────────
+# פונקציה: _level_num_to_name
+# תפקיד: המרת מספר רמה חזרה לשם טקסטואלי עבור פורמט הלוג
+# ───────────────────────────────────────────────────────────────────────
+_level_num_to_name() {
+    case "$1" in
+        0) echo "DEBUG" ;;
+        1) echo "INFO" ;;
+        2) echo "WARN" ;;
+        3) echo "ERROR" ;;
+        4) echo "CRITICAL" ;;
+        *) echo "UNKNOWN" ;;
+    esac
+}
+
+# ───────────────────────────────────────────────────────────────────────
 # פונקציה: _log
-# תפקיד: פונקציית הליבה לכתיבת לוג
-# ═══════════════════════════════════════════════════════════════
+# תפקיד: פונקציית הליבה המרכזית לכתיבת לוגים ואירועי ביקורת
+# ───────────────────────────────────────────────────────────────────────
 _log() {
+    # 1. Early-Exit מיידי: מונע תקורה והרצת Subprocesses כשהלוגר אינו פעיל
+    [[ "$LOGGER_INITIALIZED" -eq 1 ]] || return 0
+
     local level="$1"
     local component="$2"
     local message="$3"
     local log_file="${4:-$LOGGER_ACTIVE_LOG}"
-    if [[ "${LOGGER_INITIALIZED:-0}" -ne 1 ]]; then
-        return 0
-    fi
-
     local user="${5:-$(whoami 2>/dev/null || echo 'unknown')}"
 
-    # ── Skip DEBUG if LOG_LEVEL is higher ──────────────────────
-    local config_level_name
+    # 2. שליפת רמת הלוג המבוקשת מהקונפיגורציה (אם פונקציית get_conf קיימת)
+    local config_level_name="INFO"
     if declare -F get_conf >/dev/null 2>&1; then
-        config_level_name=$(get_conf "LOG_LEVEL" 2>/dev/null || echo "$LOGGER_DEFAULT_LEVEL")
-    else
-        config_level_name="$LOGGER_DEFAULT_LEVEL"
+        config_level_name=$(get_conf "LOG_LEVEL" 2>/dev/null || echo "INFO")
     fi
+
     local config_level_num
     config_level_num=$(_get_log_level_num "$config_level_name")
-    local msg_level_num
-    msg_level_num=$(_get_log_level_num "$(_log_level_name "$level")")
 
-    if [[ $msg_level_num -lt $config_level_num ]]; then
-        return 0
-    fi
+    # 3. סינון הודעות מתחת לרף המוגדר בקונפיג
+    [[ "$level" -lt "$config_level_num" ]] && return 0
 
-    # ── Format timestamp ───────────────────────────────────────
+    # 4. הפקת Timestamp מהיר ללא תהליך חיצוני (נתמך ב-Bash 4.2+)
     local timestamp
-    timestamp=$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "0000-00-00 00:00:00")
+    if ! printf -v timestamp '%(%Y-%m-%d %H:%M:%S)T' -1 2>/dev/null; then
+        timestamp=$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "0000-00-00 00:00:00")
+    fi
 
     local level_name
-    level_name=$(_log_level_name "$level")
+    level_name=$(_level_num_to_name "$level")
+    
+    local log_line="[${timestamp}] [${level_name}] [${user}] [${component}] ${message}"
 
-    local log_line
-    log_line="[${timestamp}] [${level_name}] [${user}] [${component}] ${message}"
+    # 5. כתיבה לקובץ עם Fallback מועשר ל-Syslog במקרה של כשל בהרשאות לקובץ
+    if ! echo "$log_line" >> "$log_file" 2>/dev/null; then
+        local sys_prio="${level_name,,}"
+        # התאמת רמת critical לסטנדרט ה-Facility הרשמי של Syslog (crit)
+        [[ "$sys_prio" == "critical" ]] && sys_prio="crit"
 
-    # ── Write to log file ──────────────────────────────────────
-    # Append with fallback to syslog if file is not writable
-    if echo "$log_line" >> "$log_file" 2>/dev/null; then
-        :
-    else
-        # Fallback to syslog
-        logger -t "usbguard-approval[${component}]" -p "user.${level_name,,}" "$message" 2>/dev/null || true
+        logger -t "usbguard-approval[${component}]" -p "user.${sys_prio}" "$message" 2>/dev/null || true
     fi
 
-    # ── Also output to stderr for ERROR and above ─────────────
-    if [[ $level -ge $LOG_LEVEL_ERROR ]]; then
+    # 6. פלט ל-Console (שגיאות ומעלה ל-stderr, מידע רגיל ל-stdout רק אם ה-Terminal מחובר)
+    if [[ "$level" -ge "$LOG_LEVEL_ERROR" ]]; then
         echo "$log_line" >&2
     elif [[ -t 1 ]]; then
         echo "$log_line"
     fi
 }
 
-# ═══════════════════════════════════════════════════════════════
-# פונקציות ציבוריות
-# ═══════════════════════════════════════════════════════════════
+# ─── עטיפות נוחות (Public API) ─────────────────────────────────────────
+log_debug()    { _log "$LOG_LEVEL_DEBUG" "$@"; }
+log_info()     { _log "$LOG_LEVEL_INFO" "$@"; }
+log_warn()     { _log "$LOG_LEVEL_WARN" "$@"; }
+log_error()    { _log "$LOG_LEVEL_ERROR" "$@"; }
+log_critical() { _log "$LOG_LEVEL_CRITICAL" "$@"; }
 
-log_debug() {
-    _log "$LOG_LEVEL_DEBUG" "$@"
-}
-
-log_info() {
-    _log "$LOG_LEVEL_INFO" "$@"
-}
-
-log_warn() {
-    _log "$LOG_LEVEL_WARN" "$@"
-}
-
-log_error() {
-    _log "$LOG_LEVEL_ERROR" "$@"
-}
-
-log_critical() {
-    _log "$LOG_LEVEL_CRITICAL" "$@"
-}
-
-# ═══════════════════════════════════════════════════════════════
-# פונקציה: log_audit
-# תפקיד: תיעוד אירוע ביקורת (approval, cleanup, rollback)
-# ═══════════════════════════════════════════════════════════════
-log_audit() {
-    local action="$1"        # APPROVE | CLEANUP | ROLLBACK | BACKUP | RESTORE | DENIED
-    local details="$2"
-    local log_file="${3:-$LOGGER_ACTIVE_LOG}"
-
-    log_info "AUDIT" "[${action}] ${details}" "$log_file"
-}
-
-# ═══════════════════════════════════════════════════════════════
-# פונקציה: log_session_summary
-# תפקיד: תיעוד סיכום session בסיום הרצת הסקריפט
-# ═══════════════════════════════════════════════════════════════
-log_session_summary() {
-    local action="$1"
-    local summary="$2"
-    local exit_code="${3:-0}"
-    local duration_sec="$4"
-
-    if [[ $exit_code -eq 0 ]]; then
-        log_info "SESSION" "Completed ${action}: ${summary} (duration: ${duration_sec}s)"
-    else
-        log_error "SESSION" "Failed ${action}: ${summary} (duration: ${duration_sec}s, exit: ${exit_code})"
-    fi
-}
-
-# ═══════════════════════════════════════════════════════════════
+# ───────────────────────────────────────────────────────────────────────
 # פונקציה: init_logger
-# תפקיד: אתחול מערכת הלוג (יצירת תיקיית לוג אם לא קיימת)
-# ═══════════════════════════════════════════════════════════════
+# תפקיד: אתחול מערכת הלוג, יצירת מבנה התיקיות והקשחת הרשאות
+# ───────────────────────────────────────────────────────────────────────
 init_logger() {
     local log_file="${1:-$LOGGER_DEFAULT_LOG}"
-    local log_dir
-
     LOGGER_ACTIVE_LOG="$log_file"
-    log_dir=$(dirname "$log_file" 2>/dev/null)
 
-    if [[ ! -d "$log_dir" ]]; then
-        mkdir -p "$log_dir" 2>/dev/null || {
-            echo "WARN: Could not create log directory: $log_dir" >&2
-        }
-    fi
+    local log_dir
+    log_dir=$(dirname "$log_file")
 
-    # Try to create file if not exists
-    if [[ ! -f "$log_file" ]]; then
-        touch "$log_file" 2>/dev/null || {
-            echo "WARN: Could not create log file: $log_file" >&2
-        }
-    fi
+    # יצירת התיקייה והקובץ במידה ואינם קיימים
+    mkdir -p "$log_dir" 2>/dev/null || true
+    [[ -f "$log_file" ]] || touch "$log_file" 2>/dev/null || true
 
-    # Ensure correct ownership and permissions for multi-user logging
-    # Both root (systemd timer) and usbadmins group (TUI via sudo) must write
+    # הקשחת אבטחה: בעלות ל-root, הרשאות קריאה/כתיבה לקבוצת המנהלים המורשית בלבד
     chown root:usbadmins "$log_file" 2>/dev/null || true
     chmod 660 "$log_file" 2>/dev/null || true
+
     LOGGER_INITIALIZED=1
-
-    if [[ "$log_file" == "$LOGGER_DEFAULT_LOG" ]] && [[ ! -w "$log_file" ]]; then
-        echo "WARN: Logger not writable: $log_file" >&2
-        return 0
-    fi
-
-    log_info "LOGGER" "Logger initialized (log file: ${log_file})"
 }

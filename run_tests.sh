@@ -63,13 +63,13 @@ NC='\033[0m'            # איפוס צבע
 # ═══════════════════════════════════════════════════════════════════════════════
 
 # דיווח על בדיקה שעברה
-ok()   { echo -e "${GREEN}[PASS]${NC} $1"; ((PASS++)); }
+ok()   { echo -e "${GREEN}[PASS]${NC} $1"; PASS=$((PASS + 1)); }
 
 # דיווח על בדיקה שנכשלה
-fail() { echo -e "${RED}[FAIL]${NC} $1"; ((FAIL++)); }
+fail() { echo -e "${RED}[FAIL]${NC} $1"; FAIL=$((FAIL + 1)); }
 
 # דיווח על אזהרה
-warn() { echo -e "${YELLOW}[WARN]${NC} $1"; ((WARN++)); }
+warn() { echo -e "${YELLOW}[WARN]${NC} $1"; WARN=$((WARN + 1)); }
 
 # הדפסת מידע (לא משפיע על המונים)
 info() { echo -e "${BLUE}[INFO]${NC} $1"; }

@@ -51,16 +51,16 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # ═══════════════════════════════════════════════════════════════════════════════
 
 # דיווח על בדיקה שעברה בהצלחה
-pass() { ((PASS_COUNT++)); echo -e "  ${GREEN}PASS${RESET} $*"; }
+pass() { PASS_COUNT=$((PASS_COUNT + 1)); echo -e "  ${GREEN}PASS${RESET} $*"; }
 
 # דיווח על בדיקה שנכשלה
-fail() { ((FAIL_COUNT++)); echo -e "  ${RED}FAIL${RESET} $*"; }
+fail() { FAIL_COUNT=$((FAIL_COUNT + 1)); echo -e "  ${RED}FAIL${RESET} $*"; }
 
 # דיווח על אזהרה (לא קריטית)
-warn() { ((WARN_COUNT++)); echo -e "  ${YELLOW}WARN${RESET} $*"; }
+warn() { WARN_COUNT=$((WARN_COUNT + 1)); echo -e "  ${YELLOW}WARN${RESET} $*"; }
 
 # דיווח על בדיקה שדולגה
-skip() { ((SKIP_COUNT++)); echo -e "  ${CYAN}SKIP${RESET} $*"; }
+skip() { SKIP_COUNT=$((SKIP_COUNT + 1)); echo -e "  ${CYAN}SKIP${RESET} $*"; }
 
 # הדפסת כותרת סעיף - מפרידה חזותית בין חלקי הבדיקה
 section() {
@@ -689,15 +689,30 @@ for lib in config-reader.sh logger.sh lock.sh backup.sh time-guards.sh validator
     fi
 done
 
-# בדיקת הרשאות קבצי לוג (660 root:usbadmins)
-for logfile in /var/log/usbguard-approval.log /var/log/usbguard-badusb.log /var/log/usbguard-web.log; do
+# בדיקת הרשאות קבצי לוג
+# approval.log: 640 root:usbadmins
+# audit/metrics/badusb/web: 600 root:root
+if sudo test -f /var/log/usbguard-approval.log; then
+    log_perm=$(sudo stat -c "%a %U:%G" /var/log/usbguard-approval.log 2>/dev/null)
+    if echo "$log_perm" | grep -q "640 root:usbadmins"; then
+        pass "Approval log permissions OK: $log_perm"
+    else
+        warn "Approval log permissions: $log_perm (expected 640 root:usbadmins)"
+    fi
+else
+    warn "Approval log missing"
+fi
+
+for logfile in /var/log/usbguard-approval-audit.jsonl /var/log/usbguard-approval.prom /var/log/usbguard-badusb.log /var/log/usbguard-web.log; do
     if sudo test -f "$logfile"; then
         log_perm=$(sudo stat -c "%a %U:%G" "$logfile" 2>/dev/null)
-        if echo "$log_perm" | grep -q "660 root:usbadmins"; then
-            pass "Log file permissions OK: $logfile ($log_perm)"
+        if echo "$log_perm" | grep -q "600 root:root"; then
+            pass "Sensitive log permissions OK: $logfile ($log_perm)"
         else
-            warn "Log file permissions: $logfile ($log_perm)"
+            warn "Sensitive log permissions: $logfile ($log_perm) (expected 600 root:root)"
         fi
+    else
+        warn "Sensitive log missing: $logfile"
     fi
 done
 

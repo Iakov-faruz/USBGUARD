@@ -145,20 +145,23 @@ preflight_checks() {
         "$SCRIPT_DIR/scripts/usb-approve.sh"
         "$SCRIPT_DIR/scripts/detect-host-input.sh"      # חשוב: זיהוי מקלדת/עכבר מקומיים
         "$SCRIPT_DIR/scripts/cleanup-expired.sh"
+        "$SCRIPT_DIR/scripts/healthcheck.sh"
         "$SCRIPT_DIR/scripts/badusb-monitor.py"
         "$SCRIPT_DIR/scripts/backup-rules.sh"
         "$SCRIPT_DIR/scripts/import-rules.sh"
         "$SCRIPT_DIR/scripts/export-rules.sh"
+        "$SCRIPT_DIR/scripts/network-lockdown.sh"
         "$SCRIPT_DIR/web/app.py"
         "$SCRIPT_DIR/web/start-web.sh"
         "$SCRIPT_DIR/systemd/usbguard-ttl-reaper.service"
         "$SCRIPT_DIR/systemd/usbguard-ttl-reaper.timer"
         "$SCRIPT_DIR/systemd/usbguard-web.service"
+        "$SCRIPT_DIR/systemd/usbguard-network-lockdown.service"
     )
     local missing=0
     for file in "${required_files[@]}"; do
         if ! verify_file "$file"; then
-            ((missing++))
+            missing=$((missing + 1))
         fi
     done
     if [[ $missing -gt 0 ]]; then
@@ -213,6 +216,7 @@ install_system_packages() {
         python3-evdev     # לקריאת אירועי מקלדת/עכבר
         python3-flask     # ממשק האינטרנט
         dos2unix          # להמרת סיומות שורות
+        nftables          # kernel firewall enforcement
         ntpdate           # סנכרון זמן
     )
 
@@ -363,6 +367,21 @@ EOF
 
     run_cmd chmod 600 "$daemon_conf"
     run_cmd chown root:root "$daemon_conf"
+    run_cmd mkdir -p "/etc/usbguard/IPCAccessControl.d"
+    run_cmd tee "/etc/usbguard/IPCAccessControl.d/root" > /dev/null << 'EOF'
+Devices=modify,list,listen
+Policy=modify,list
+Exceptions=listen
+Parameters=modify,list,listen
+EOF
+    run_cmd tee "/etc/usbguard/IPCAccessControl.d/:usbadmins" > /dev/null << 'EOF'
+Devices=modify,list,listen
+Policy=list
+Exceptions=listen
+Parameters=list,listen
+EOF
+    run_cmd chmod 600 "/etc/usbguard/IPCAccessControl.d/root" "/etc/usbguard/IPCAccessControl.d/:usbadmins"
+    run_cmd chown root:root "/etc/usbguard/IPCAccessControl.d/root" "/etc/usbguard/IPCAccessControl.d/:usbadmins"
 
     log_ok "USBGuard daemon configured"
     return 0
@@ -392,6 +411,7 @@ deploy_files() {
     # 5.3 סקריפטים ראשיים (כולל detect-host-input.sh)
     log_info "Deploying main scripts..."
     local main_scripts=(
+        healthcheck.sh          # בדיקת מוכנות ל-systemd
         usb-approve.sh          # ממשק ה-TUI לאישור התקנים
         detect-host-input.sh    # זיהוי מקלדת/עכבר מקומיים ויצירת כללים
         cleanup-expired.sh      # ניקוי כללים שפג תוקפם (TTL)
@@ -399,6 +419,7 @@ deploy_files() {
         restore-rules.sh        # שחזור כללים מגיבוי
         import-rules.sh         # יבוא כללים מקובץ חיצוני
         export-rules.sh         # ייצוא כללים לקובץ
+        network-lockdown.sh     # nftables lockdown enforcement
         badusb-monitor.py       # ניטור התנהגותי להתקפות BadUSB
         usbguard-status.sh      # הצגת סטטוס התקנים מחוברים
         check-config.sh         # בדיקת תקינות תצורה
@@ -426,6 +447,10 @@ deploy_files() {
         stages-core.sh      # לוגיקת אישור רב-שלבי
         stages-io.sh        # קלט/פלט לשלבי האישור
         device-utils.sh     # כלים לעבודה עם מזהי התקנים
+        retry.sh            # retry with exponential backoff
+        telemetry.sh        # audit JSONL and metrics
+        rules-validator.sh  # USBGuard rule schema validation
+        network-lockdown.sh # nftables helper
     )
 
     for lib in "${lib_files[@]}"; do
@@ -489,6 +514,7 @@ install_services() {
         "usbguard-ttl-reaper.timer"     # טיימר שמפעיל את השירות מדי יום
         "usbguard-web.service"          # שירות ה-Flask web interface
         "usbguard-behavioral.service"   # ניטור התנהגותי (BadUSB)
+        "usbguard-network-lockdown.service"
     )
 
     for service in "${services[@]}"; do
@@ -513,6 +539,9 @@ install_services() {
     run_cmd systemctl enable --now usbguard || log_warn "Could not enable usbguard (already running?)"
     run_cmd systemctl restart usbguard || log_warn "Could not restart usbguard"
     sleep 2   # לתת לדמון להתבסס
+
+    # שירות lockdown רשתי
+    run_cmd systemctl enable --now usbguard-network-lockdown.service || log_warn "Could not enable/start network lockdown"
 
     # טיימר ה-TTL reaper
     run_cmd systemctl enable --now usbguard-ttl-reaper.timer || log_warn "Could not enable TTL reaper timer"
@@ -564,7 +593,15 @@ EOF
 
     # 7.2 Sudoers: מתן הרשאה לקבוצת usbadmins להריץ סקריפטים מסוימים ללא סיסמה
     local sudoers_file="/etc/sudoers.d/usbguard-approval"
-    run_cmd tee "$sudoers_file" > /dev/null << 'EOF'
+    local mass_storage_alias=""
+    local mass_storage_alias_line=""
+    if [[ -f "/etc/usbguard/scripts/usb-mass-storage-handler.sh" ]]; then
+        mass_storage_alias=" USBGUARD_MASS_STORAGE"
+        mass_storage_alias_line="Cmnd_Alias USBGUARD_MASS_STORAGE=/etc/usbguard/scripts/usb-mass-storage-handler.sh
+"
+    fi
+
+    run_cmd tee "$sudoers_file" > /dev/null << EOF
 # USBGuard Approval Manager - Sudoers Authorization
 # Allows members of usbadmins group to run approval scripts without password
 Cmnd_Alias USBGUARD_APPROVE=/etc/usbguard/scripts/usb-approve.sh
@@ -572,8 +609,10 @@ Cmnd_Alias USBGUARD_BACKUP=/etc/usbguard/scripts/backup-rules.sh
 Cmnd_Alias USBGUARD_RESTORE=/etc/usbguard/scripts/restore-rules.sh
 Cmnd_Alias USBGUARD_IMPORT=/etc/usbguard/scripts/import-rules.sh
 Cmnd_Alias USBGUARD_EXPORT=/etc/usbguard/scripts/export-rules.sh
-
-%usbadmins ALL=(root) NOPASSWD: USBGUARD_APPROVE, USBGUARD_BACKUP, USBGUARD_RESTORE, USBGUARD_IMPORT, USBGUARD_EXPORT
+Cmnd_Alias USBGUARD_HEALTHCHECK=/etc/usbguard/scripts/healthcheck.sh
+Cmnd_Alias USBGUARD_NETWORK=/etc/usbguard/scripts/network-lockdown.sh
+${mass_storage_alias_line}
+%usbadmins ALL=(root) NOPASSWD: USBGUARD_APPROVE, USBGUARD_BACKUP, USBGUARD_RESTORE, USBGUARD_IMPORT, USBGUARD_EXPORT, USBGUARD_HEALTHCHECK, USBGUARD_NETWORK${mass_storage_alias}
 EOF
 
     run_cmd chmod 440 "$sudoers_file"
@@ -591,12 +630,17 @@ EOF
 
     # 7.3 יצירת קבצי לוג ריקים עם הרשאות מתאימות
     run_cmd touch "/var/log/usbguard-approval.log"
+    run_cmd touch "/var/log/usbguard-approval-audit.jsonl"
+    run_cmd touch "/var/log/usbguard-approval.prom"
     run_cmd touch "/var/log/usbguard-badusb.log"
     run_cmd touch "/var/log/usbguard-web.log"
-    run_cmd chmod 660 "/var/log/usbguard-approval.log"
-    run_cmd chmod 660 "/var/log/usbguard-badusb.log"
-    run_cmd chmod 660 "/var/log/usbguard-web.log"
-    run_cmd chown root:usbadmins /var/log/usbguard-approval.log /var/log/usbguard-badusb.log /var/log/usbguard-web.log
+    run_cmd chmod 640 "/var/log/usbguard-approval.log"
+    run_cmd chmod 600 "/var/log/usbguard-approval-audit.jsonl"
+    run_cmd chmod 600 "/var/log/usbguard-approval.prom"
+    run_cmd chmod 600 "/var/log/usbguard-badusb.log"
+    run_cmd chmod 600 "/var/log/usbguard-web.log"
+    run_cmd chown root:usbadmins /var/log/usbguard-approval.log
+    run_cmd chown root:root /var/log/usbguard-approval-audit.jsonl /var/log/usbguard-approval.prom /var/log/usbguard-badusb.log /var/log/usbguard-web.log
 
     log_ok "Security configuration complete"
     return 0
@@ -615,7 +659,7 @@ final_verification() {
         log_ok "USBGuard daemon is running"
     else
         log_error "USBGuard daemon is NOT running"
-        ((failed++))
+        failed=$((failed + 1))
     fi
 
     # 8.2 בדיקה שה-TTL reaper timer פעיל (אפשרי שיהיה disabled, זה רק אזהרה)
@@ -641,7 +685,7 @@ final_verification() {
             fi
         else
             log_error "$rule not found"
-            ((failed++))
+            failed=$((failed + 1))
         fi
     done
 
@@ -715,6 +759,7 @@ uninstall_usbguard() {
         "usbguard"
         "usbguard-web.service"
         "usbguard-behavioral.service"
+        "usbguard-network-lockdown.service"
         "usbguard-ttl-reaper.timer"
         "usbguard-ttl-reaper.service"
     )
@@ -735,6 +780,7 @@ uninstall_usbguard() {
         "/etc/systemd/system/usbguard-ttl-reaper.timer"
         "/etc/systemd/system/usbguard-web.service"
         "/etc/systemd/system/usbguard-behavioral.service"
+        "/etc/systemd/system/usbguard-network-lockdown.service"
         "/lib/systemd/system/usbguard.service"
         "/etc/systemd/system/usbguard.service"
     )
@@ -749,6 +795,7 @@ uninstall_usbguard() {
         "/etc/systemd/system/multi-user.target.wants/usbguard-ttl-reaper.service"
         "/etc/systemd/system/multi-user.target.wants/usbguard-web.service"
         "/etc/systemd/system/multi-user.target.wants/usbguard-behavioral.service"
+        "/etc/systemd/system/multi-user.target.wants/usbguard-network-lockdown.service"
         "/etc/systemd/system/timers.target.wants/usbguard-ttl-reaper.timer"
     )
     for symlink in "${symlinks[@]}"; do
@@ -779,7 +826,7 @@ uninstall_usbguard() {
     # שלב 4: הסרת חבילות (apt ו-pip)
     log_section "Step 4/8: Removing packages"
     if command -v dpkg &>/dev/null; then
-        for pkg in usbguard python3-usbguard python3-evdev python3-flask dos2unix ntpdate; do
+        for pkg in usbguard python3-usbguard python3-evdev python3-flask dos2unix nftables ntpdate; do
             if dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q " installed$"; then
                 apt-get remove -y "$pkg" 2>/dev/null || true
                 apt-get purge -y "$pkg" 2>/dev/null || true
@@ -812,6 +859,7 @@ uninstall_usbguard() {
     log_section "Step 6/8: Removing USBGuard Manager files and directories"
     local remove_paths=(
         "/etc/usbguard"
+        "/etc/udev/rules.d/99-usbguard-mass-storage.rules"
         "/var/lib/usbguard-manager"
         "/var/log/usbguard"
         "/var/lock/usbguard"
@@ -840,16 +888,26 @@ uninstall_usbguard() {
 
     # שלב 7: הסרת קבוצת usbadmins (אחרי שהורדנו את כל המשתמשים ממנה)
     log_section "Step 7/8: Removing usbadmins group"
+
     if getent group usbadmins >/dev/null 2>&1; then
         local members
         members=$(getent group usbadmins | cut -d: -f4)
-        if [[ -n "$members" ]]; then
-            for user in $(echo "$members" | tr ',' ' '); do
-                gpasswd -d "$user" usbadmins 2>/dev/null || true
-                log_info "Removed user '$user' from usbadmins group"
-            done
+
+        # פיצול רשימת המשתמשים ללא שימוש ב־tr או Subprocess מיותר
+        IFS=',' read -r -a users <<< "$members"
+
+        for user in "${users[@]}"; do
+            [[ -n "$user" ]] || continue
+            gpasswd -d "$user" usbadmins 2>/dev/null || true
+            log_info "Removed user '$user' from usbadmins group"
+        done
+
+        # ניסיון להסיר את הקבוצה עצמה
+        if groupdel usbadmins 2>/dev/null; then
+            log_ok "Group 'usbadmins' removed"
+        else
+            log_warn "Could not remove usbadmins group (may have other members)"
         fi
-        groupdel usbadmins 2>/dev/null && log_ok "Group 'usbadmins' removed" || log_warn "Could not remove usbadmins group (may have other members)"
     else
         log_info "Group 'usbadmins' not found, skipping"
     fi

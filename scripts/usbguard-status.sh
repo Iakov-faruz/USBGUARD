@@ -1,16 +1,22 @@
 #!/usr/bin/env bash
 # ═══════════════════════════════════════════════════════════════
 # USBGuard Approval Manager - Status Dashboard (CLI)
-# Version: 1.0
-# ═══════════════════════════════════════════════════════════════
-# מציג סטטוס מלא של מערכת USBGuard Approval Manager
-# הרצה: sudo ./usbguard-status.sh
+# Version: 3.0 (Hardened, Library-Integrated)
 # ═══════════════════════════════════════════════════════════════
 
 set -euo pipefail
 
-# ─── Configuration ────────────────────────────────────────────
+# ─── Configuration & Library Loading ──────────────────────────
 CONFIG_FILE="/etc/usbguard/approval-manager.conf"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LIB_DIR="${SCRIPT_DIR}/lib"
+
+# טעינת ספריית הקריאה המרכזית - החלפה של ה-grep -oP המקומי
+source "${LIB_DIR}/config-reader.sh" 2>/dev/null || { 
+    echo "FATAL: config-reader.sh missing in ${LIB_DIR}" >&2
+    exit 1 
+}
+
 SLEEP_INTERVAL=5
 WATCH_MODE=false
 
@@ -21,22 +27,6 @@ readonly COLOR_GREEN='\033[0;32m'
 readonly COLOR_YELLOW='\033[1;33m'
 readonly COLOR_CYAN='\033[0;36m'
 readonly COLOR_BOLD='\033[1m'
-
-# ─── Helper: get config value ────────────────────────────────
-get_conf() {
-    local key="$1"
-    local file="$2"
-    grep -oP "^${key}=\K.*" "$file" 2>/dev/null || echo ""
-}
-
-get_conf_int() {
-    local key="$1"
-    local default="$2"
-    local file="$3"
-    local val
-    val=$(grep -oP "^${key}=\K.*" "$file" 2>/dev/null || echo "$default")
-    echo "$val"
-}
 
 # ─── Parse arguments ─────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -130,9 +120,9 @@ check_timer_next_run() {
 
 check_rules_count() {
     local file="$1"
-    if [[ -f "$file" ]]; then
+    if [[ -n "$file" && -f "$file" ]]; then
         local count
-        count=$(grep -cE 'allow' "$file" 2>/dev/null || echo "0")
+        count=$(grep -cE '^[[:space:]]*(allow|block|reject)' "$file" 2>/dev/null || echo "0")
         echo "$count"
     else
         echo "0"
@@ -141,12 +131,12 @@ check_rules_count() {
 
 check_rules_permissions() {
     local file="$1"
-    if [[ ! -f "$file" ]]; then
+    if [[ -z "$file" || ! -f "$file" ]]; then
         echo -e "${COLOR_YELLOW}Missing${COLOR_RESET}"
         return
     fi
 
-    local perms owner group
+    local perms owner
     if command -v stat &>/dev/null; then
         perms=$(stat -L -c "%a" "$file" 2>/dev/null || echo "???")
         owner=$(stat -L -c "%U:%G" "$file" 2>/dev/null || echo "???")
@@ -177,7 +167,7 @@ check_group_status() {
         if [[ -n "$members" ]]; then
             echo -e "${COLOR_GREEN}Exists (members: $members)${COLOR_RESET}"
         else
-            echo -e "${COLOR_YELLOW}Exists (no members)${COLOR_RESET}"
+            echo -e "${COLOR_YELLOW}Exists (no members managed locally)${COLOR_RESET}"
         fi
     else
         echo -e "${COLOR_RED}Missing${COLOR_RESET}"
@@ -200,9 +190,9 @@ check_last_reaper_run() {
     if [[ -f "$state_file" ]]; then
         local epoch
         epoch=$(cat "$state_file" 2>/dev/null || echo "0")
-        if [[ "$epoch" -gt 0 ]]; then
+        if [[ "$epoch" =~ ^[0-9]+$ ]] && [[ "$epoch" -gt 0 ]]; then
             local last_run
-            last_run=$(date -d "@$epoch" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "unknown")
+            last_run=$(date -d "@$epoch" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || date -r "$epoch" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "Epoch: $epoch")
             echo "$last_run"
         else
             echo "Never"
@@ -216,7 +206,6 @@ check_last_reaper_run() {
 # Display Dashboard
 # ═══════════════════════════════════════════════════════════════
 show_dashboard() {
-    # Clear screen in watch mode
     if [[ "$WATCH_MODE" == "true" ]]; then
         clear 2>/dev/null || true
     fi
@@ -224,17 +213,18 @@ show_dashboard() {
     local timestamp
     timestamp=$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "unknown")
 
-    # Detect rules files
-    local rules_system rules_permanent rules_temporary
-    rules_system=$(get_conf "RULES_SYSTEM" "$CONFIG_FILE")     || rules_system="/etc/usbguard/rules.d/00-system.rules"
-    rules_permanent=$(get_conf "RULES_PERMANENT" "$CONFIG_FILE") || rules_permanent="/etc/usbguard/rules.d/50-permanent.rules"
-    rules_temporary=$(get_conf "RULES_TEMPORARY" "$CONFIG_FILE") || rules_temporary="/etc/usbguard/rules.d/90-temporary.rules"
-
-    local temp_ttl
-    temp_ttl=$(get_conf_int "TEMP_TTL_SECONDS" 3600 "$CONFIG_FILE")
+    # קריאה בטוחה דרך הספריה החדשה ומניעת קריסות set -e באמצעות גזירת משתנים ריקים
+    local rules_system rules_permanent rules_temporary temp_ttl
+    
+    rules_system=$(get_conf "RULES_SYSTEM" "$CONFIG_FILE" 2>/dev/null) || rules_system="/etc/usbguard/rules.d/00-system.rules"
+    rules_permanent=$(get_conf "RULES_PERMANENT" "$CONFIG_FILE" 2>/dev/null) || rules_permanent="/etc/usbguard/rules.d/50-permanent.rules"
+    rules_temporary=$(get_conf "RULES_TEMPORARY" "$CONFIG_FILE" 2>/dev/null) || rules_temporary="/etc/usbguard/rules.d/90-temporary.rules"
+    
+    # שימוש מובנה ב-get_conf_int מהספריה
+    temp_ttl=$(get_conf_int "TEMP_TTL_SECONDS" "3600" "$CONFIG_FILE")
 
     echo -e "${COLOR_BOLD}╔══════════════════════════════════════════════════════════════╗${COLOR_RESET}"
-    echo -e "${COLOR_BOLD}║              USBGuard Approval Manager Status               ║${COLOR_RESET}"
+    echo -e "${COLOR_BOLD}║                USBGuard Approval Manager Status              ║${COLOR_RESET}"
     echo -e "${COLOR_BOLD}╚══════════════════════════════════════════════════════════════╝${COLOR_RESET}"
     echo ""
     echo -e " ${COLOR_CYAN}Last updated:${COLOR_RESET} $timestamp"
@@ -253,7 +243,6 @@ show_dashboard() {
 
     # ── Section 2: Rules Files ───────────────────────────────
     echo -e "${COLOR_BOLD}── Rules Files ────────────────────────────────────────────${COLOR_RESET}"
-
     printf "  %-20s %-12s %-20s %b\n" "File" "Rules" "Permissions" "Status"
     printf "  %-20s %-12s %-20s %b\n" "────" "─────" "───────────" "──────"
 
@@ -303,15 +292,12 @@ show_dashboard() {
 # MAIN
 # ═══════════════════════════════════════════════════════════════
 main() {
-    # Root check (needed for some operations)
     if [[ $EUID -ne 0 ]]; then
         echo -e "${COLOR_YELLOW}WARN: Some information may not be available without root${COLOR_RESET}" >&2
     fi
 
     if [[ "$WATCH_MODE" == "true" ]]; then
-        # Trap Ctrl+C to exit cleanly
         trap 'echo -e "\n${COLOR_CYAN}Exiting watch mode.${COLOR_RESET}"; exit 0' INT
-
         while true; do
             show_dashboard
             sleep "$SLEEP_INTERVAL"

@@ -1,3 +1,31 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# /etc/logrotate.d/usbguard-approval
+# USBGuard Approval Manager – Log Rotation Configuration
+# Version: 2.2 (Production Ready)
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# מטרה:
+#   ניהול רוטציה אוטומטית לכל קבצי הלוג של USBGuard Approval Manager
+#
+# כולל:
+#   - /var/log/usbguard-approval.log          (לוג ראשי, נגיש לקבוצת usbadmins)
+#   - /var/log/usbguard-approval-audit.jsonl  (Audit – רגיש)
+#   - /var/log/usbguard-approval.prom         (Metrics – רגיש)
+#   - /var/log/usbguard-badusb.log            (זיהוי BadUSB – רגיש)
+#   - /var/log/usbguard-web.log               (Web – רגיש)
+#
+# מדיניות כללית:
+#   - weekly
+#   - rotate 12
+#   - compress + delaycompress
+#   - missingok, notifempty
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 1. קובץ הלוג הראשי – usbguard-approval.log
+#    הרשאות: 640 root:usbadmins (קריאה לקבוצת usbadmins)
+# ──────────────────────────────────────────────────────────────────────────────
 /var/log/usbguard-approval.log {
     weekly
     rotate 12
@@ -9,5 +37,31 @@
     sharedscripts
     postrotate
         /usr/bin/killall -HUP rsyslogd 2>/dev/null || true
+        systemctl reload usbguard-behavioral 2>/dev/null || true
+        systemctl reload usbguard-web 2>/dev/null || true
+    endscript
+}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 2. קבצי לוג רגישים – audit, metrics, badusb, web
+#    הרשאות: 600 root:root (גישה לשורש בלבד)
+# ──────────────────────────────────────────────────────────────────────────────
+/var/log/usbguard-approval-audit.jsonl
+/var/log/usbguard-approval.prom
+/var/log/usbguard-badusb.log
+/var/log/usbguard-web.log {
+    weekly
+    rotate 12
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 600 root root
+    sharedscripts
+    postrotate
+        /usr/bin/killall -HUP rsyslogd 2>/dev/null || true
+        systemctl reload usbguard-behavioral 2>/dev/null || true
+        systemctl reload usbguard-web 2>/dev/null || true
     endscript
 }

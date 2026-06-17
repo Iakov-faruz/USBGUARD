@@ -1,17 +1,57 @@
+# ════════════════════════════════════════════════════════════════════════
+# USBGuard TTL Reaper
+# Systemd Unit – Cleanup Expired Temporary Rules (TTL-based)
+# Version: 2.3 (Security Corrected)
+# ════════════════════════════════════════════════════════════════════════
+#
+# תפקיד השירות:
+#   מחיקה אוטומטית של Temporary Rules שפג תוקפם (TTL)
+#   בהתאם למדיניות ה־Approval Manager.
+#
+# הערה חשובה:
+#   NoNewPrivileges=true אינו מגביל הרשאות כתיבה.
+#   הוא רק מונע מהתהליך לרכוש הרשאות חדשות (setuid/capabilities).
+#   הרשאות כתיבה נקבעות ע"י User=root ו־ReadWritePaths.
+#
+# ════════════════════════════════════════════════════════════════════════
+
 [Unit]
 Description=USBGuard TTL Reaper - Cleanup Expired Temporary Rules
+Documentation=man:usbguard(8)
 After=time-sync.target usbguard.service
 Wants=time-sync.target
-Documentation=man:usbguard(8)
 
 [Service]
 Type=oneshot
+
+# בדיקת מוכנות לפני הריצה
+ExecStartPre=/etc/usbguard/scripts/healthcheck.sh --ready --skip-daemon
+
+# ביצוע הניקוי בפועל
 ExecStart=/etc/usbguard/scripts/cleanup-expired.sh
+
 User=root
 Group=root
+
+# עדיפות נמוכה – לא להעמיס על המערכת
 Nice=10
 IOSchedulingClass=idle
+
+# ───────────────────────────────────────────────────────────────────────
+# Security Hardening
+# ───────────────────────────────────────────────────────────────────────
 ProtectSystem=strict
-ReadWritePaths=/etc/usbguard /var/lib/usbguard-manager /var/log /var/lock
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+LockPersonality=true
 PrivateTmp=true
-NoNewPrivileges=false
+
+# נתיבים מותרים לכתיבה (נקבעים ע"י root + ReadWritePaths)
+ReadWritePaths=/etc/usbguard /var/lib/usbguard-manager /var/log /var/lock /run
+
+# מניעת הרצת setuid/capabilities — הגנת עומק מומלצת
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

@@ -159,6 +159,17 @@ main() {
     fi
     echo -e "${COLOR_GREEN}✓ JSON is valid${COLOR_RESET}\n"
 
+    if [[ "$DRY_RUN" != "true" && "$FORCE" != "true" ]]; then
+        echo ""
+        echo -e "${COLOR_YELLOW}WARNING: This will add rules to the system.${COLOR_RESET}"
+        echo -e "Do you want to continue? (yes/no):"
+        read -r confirm
+        if [[ "$confirm" != "yes" ]]; then
+            echo -e "${COLOR_CYAN}Import cancelled.${COLOR_RESET}"
+            exit 0
+        fi
+    fi
+
     # מצב Dry Run
     if [[ "$DRY_RUN" == "true" ]]; then
         echo -e "${COLOR_YELLOW}--- DRY RUN MODE ---${COLOR_RESET}"

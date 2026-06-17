@@ -1,50 +1,61 @@
 # ════════════════════════════════════════════════════════════════════════
-# USBGuard BadUSB Behavioral Monitor Daemon
+# USBGuard Network Lockdown Firewall
 # Systemd Unit – Hardened Service Definition
 # Version: 2.2 (Security Enhanced)
 # ════════════════════════════════════════════════════════════════════════
+#
+# תפקיד השירות:
+#   הפעלת מנגנון "Zero Trust Network Lockdown" של USBGuard
+#   באמצעות סקריפט firewall ייעודי.
+#
+# מאפיינים:
+#   - מופעל לפני usbguard-web
+#   - רץ כ־oneshot עם RemainAfterExit
+#   - כולל הקשחת אבטחה מקסימלית
+#
+# ════════════════════════════════════════════════════════════════════════
 
 [Unit]
-Description=USBGuard BadUSB Behavioral Monitor Daemon
+Description=USBGuard Network Lockdown Firewall
 Documentation=https://github.com/usbguard/usbguard-manager
 Requires=usbguard.service
-After=usbguard.service network.target
+After=usbguard.service
 Before=usbguard-web.service
 
 [Service]
-Type=simple
+Type=oneshot
+RemainAfterExit=yes
+
+# הפעלה וכיבוי
+ExecStart=/etc/usbguard/scripts/network-lockdown.sh start
+ExecStop=/etc/usbguard/scripts/network-lockdown.sh stop
+
 User=root
 Group=root
-ExecStart=/etc/usbguard/scripts/badusb-monitor.py
-ExecReload=/bin/kill -HUP $MAINPID
-Restart=on-failure
-RestartSec=5
-PIDFile=/run/usbguard-badusb.pid
 
 # ───────────────────────────────────────────────────────────────────────
 # Security Hardening
 # ───────────────────────────────────────────────────────────────────────
 NoNewPrivileges=true
-ProtectHome=true
 ProtectSystem=strict
+ProtectHome=true
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
 LockPersonality=true
 PrivateTmp=true
-RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+# הרשאות רשת מינימליות
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+
+# סינון קריאות מערכת
 SystemCallFilter=@system-service
 
-# אין יכולות – מצב מחמיר
-CapabilityBoundingSet=
+# יכולות נדרשות בלבד (Firewall)
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
 
-# הרשאות כתיבה נדרשות
-ReadWritePaths=/var/log /run /dev/input /sys/class/input
-
-# ───────────────────────────────────────────────────────────────────────
-# Timeout
-# ───────────────────────────────────────────────────────────────────────
-TimeoutStopSec=10
+# נתיבים מותרים לכתיבה
+ReadWritePaths=/etc/usbguard /var/log /run
 
 [Install]
 WantedBy=multi-user.target

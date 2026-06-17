@@ -1,0 +1,25 @@
+# ════════════════════════════════════════════════════════════════════════
+# USBGuard – Zero Trust Hardware Enforcement (udev)
+# Mass Storage Pre‑Block Rule
+# Version: 2.3 (Production Ready)
+# ════════════════════════════════════════════════════════════════════════
+#
+# מטרה:
+#   למנוע מהמערכת לבצע auto‑mount להתקני USB Mass Storage
+#   לפני שמנגנון ה־Approval Manager/Behavioral Analysis בודק אותם.
+#
+# הערות:
+#   - הכלל מופעל על כל דיסק USB (כולל התקני UASP מהירים)
+#   - UDISKS_IGNORE=1 מונע auto‑mount מצד udisks / GNOME / KDE
+#   - הסקריפט handler מבצע חסימה/אישור/לוגיקה נוספת
+#
+# ════════════════════════════════════════════════════════════════════════
+
+# Block/Manage USB Mass Storage before auto-mount
+ACTION=="add|change", \
+  SUBSYSTEM=="block", \
+  ENV{DEVTYPE}=="disk", \
+  ENV{ID_BUS}=="usb", \
+  ENV{ID_USB_DRIVER}=="usb-storage|uas", \
+  ENV{UDISKS_IGNORE}="1", \
+  RUN+="/etc/usbguard/scripts/usb-mass-storage-handler.sh %k %E{DEVNAME}"

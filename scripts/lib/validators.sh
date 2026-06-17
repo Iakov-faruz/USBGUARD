@@ -98,7 +98,8 @@ check_rules_files_exist() {
         if [[ ! -f "${rules_dir}/${rule_file}" ]]; then
             log_warn "VALIDATOR" "Rules file missing: ${rules_dir}/${rule_file}"
             echo "WARN: Rules file missing: ${rules_dir}/${rule_file}" >&2
-            ((missing++))
+            missing=$((missing + 1))
+
         fi
     done
 
@@ -325,7 +326,8 @@ check_external_deps() {
         if ! command -v "$dep" &>/dev/null; then
             echo "ERROR: Required dependency not found: $dep" >&2
             log_error "VALIDATOR" "Required dependency not found: $dep"
-            ((missing++))
+            missing=$((missing + 1))
+
         fi
     done
 
@@ -407,7 +409,7 @@ run_all_preflight_checks() {
 
     for check_func in "${checks[@]}"; do
         if ! $check_func; then
-            ((failed++))
+            failed=$((failed + 1))
         fi
     done
 

@@ -1,136 +1,136 @@
 #!/usr/bin/env bash
-# ═══════════════════════════════════════════════════════════════
-# USBGuard Approval Manager - Safe Configuration Reader
-# Version: 2.2
-# ═══════════════════════════════════════════════════════════════
-# Parser בטוח לקריאת approval-manager.conf
-# פורמט נוקשה בלבד: KEY=VALUE (ללא רווחים מסביב ל-=)
-# ללא source, ללא eval, ללא הזרקת קוד
-# ═══════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════
+# USBGuard Approval Manager – Safe Configuration Reader
+# Version: 3.2 (Hardened, Zero‑Subprocess, Production‑Grade)
+# ════════════════════════════════════════════════════════════════════════
+#
+# מטרה:
+#   קריאה בטוחה, מהירה ומוקשחת של פרמטרים מקובץ קונפיגורציה.
+#
+# עקרונות:
+#   • ללא eval / source של קובץ קונפיגורציה.
+#   • ללא grep / sed / awk / tr חיצוניים (Zero‑Subprocess).
+#   • כל ערך עובר סניטיזציה + בדיקת תווים מסוכנים.
+#   • תמיכה בערכים: טקסט, מספרים, בוליאנים, רשימות (CSV).
+#   • כולל validate_config_file לוולידציה מלאה של הקובץ.
+#
+# פורמט קובץ נתמך:
+#   KEY=value
+#   KEY = value
+#   KEY="value with spaces"
+#   # הערות מתחילות בסולמית
+#
+# ════════════════════════════════════════════════════════════════════════
 
-# ─── Configuration ────────────────────────────────────────────
 readonly CONFIG_READER_DEFAULT_CONF="/etc/usbguard/approval-manager.conf"
 
-# ─── Dangerous Characters Filter ──────────────────────────────
-# תווים אסורים בערכי קונפיג (shell special chars)
-readonly CONFIG_READER_FORBIDDEN_CHARS='[$`|&<>(){}\[\]!:]'
+# רשימת תווים אסורים בהחלט בערכי קונפיגורציה (מניעת Shell Injection)
+# כולל: $, `, |, &, <, >, (, ), {, }, [, ], !, :, ;
+readonly _CONF_FORBIDDEN_REGEX='[\$\`\|\&\<\>\(\)\{\}
 
-# ═══════════════════════════════════════════════════════════════
-# פונקציה: get_conf
-# תפקיד: קריאת ערך בודד מקובץ קונפיג
-# שימוש: value=$(get_conf "KEY_NAME" ["/path/to/config"])
-# ═══════════════════════════════════════════════════════════════
+\[\]
+
+\!\:\;]'
+
+# ───────────────────────────────────────────────────────────────────────
+# פונקציית עזר: _trim
+# מסירה רווחים/טאבים מתחילת וסוף מחרוזת (ללא subprocess).
+# ───────────────────────────────────────────────────────────────────────
+_trim() {
+    local s="$1"
+    # הסרת רווחים בתחילת המחרוזת
+    s="${s#"${s%%[![:space:]]*}"}"
+    # הסרת רווחים בסוף המחרוזת
+    s="${s%"${s##*[![:space:]]}"}"
+    printf '%s' "$s"
+}
+
+# ───────────────────────────────────────────────────────────────────────
+# get_conf — קריאת ערך טקסטואלי
+# Args:
+#   $1: KEY
+#   $2: קובץ קונפיגורציה (אופציונלי)
+# Return:
+#   stdout: הערך הנקי
+#   exit 0: הצלחה
+#   exit 1: שגיאה / לא נמצא
+# ───────────────────────────────────────────────────────────────────────
 get_conf() {
     local key="$1"
     local config_file="${2:-$CONFIG_READER_DEFAULT_CONF}"
-    local line value sanitized
+    local line line_key line_value
 
-    # ── Validation ──────────────────────────────────────────────
+    # וידוא מפתח
     if [[ -z "$key" ]]; then
-        echo "ERROR: [config-reader] KEY parameter is empty" >&2
+        echo "ERROR: [config-reader] Key is empty" >&2
         return 1
     fi
-
-    if [[ ! -f "$config_file" ]]; then
-        echo "ERROR: [config-reader] Config file not found: $config_file" >&2
-        return 1
-    fi
-
-    if [[ ! -r "$config_file" ]]; then
-        echo "ERROR: [config-reader] Config file not readable: $config_file" >&2
-        return 1
-    fi
-
-    # ── Validate KEY format (alphanumeric + underscores only) ───
     if [[ ! "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
         echo "ERROR: [config-reader] Invalid KEY format: '$key'" >&2
         return 1
     fi
 
-    # ── Search for KEY=VALUE ────────────────────────────────────
-    # פורמט נוקשה: KEY=VALUE (ללא רווחים מסביב ל-=)
-    # מתעלם מהערות (שורות שמתחילות ב-#, גם עם רווחים לפני)
-    # הערות באמצע השורה אינן נתמכות (הערך יכיל את הסולמית)
+    # וידוא קובץ
+    if [[ ! -f "$config_file" ]]; then
+        echo "ERROR: [config-reader] Config file not found: $config_file" >&2
+        return 1
+    fi
+    if [[ ! -r "$config_file" ]]; then
+        echo "ERROR: [config-reader] Config file not readable: $config_file" >&2
+        return 1
+    fi
+
     while IFS= read -r line || [[ -n "$line" ]]; do
-        # הסר רווחים מובילים
-        line="${line#"${line%%[![:space:]]*}"}"
+        # ניקוי רווחים בתחילת השורה
+        line="$(_trim "$line")"
 
-        # דלג על שורות ריקות
-        [[ -z "$line" ]] && continue
+        # דילוג על ריק / הערות
+        [[ -z "$line" || "$line" == '#'* ]] && continue
 
-        # דלג על הערות
-        [[ "$line" == '#'* ]] && continue
+        # חייב להכיל '=' ולא להתחיל ב'='
+        [[ "$line" == *=* && "$line" != '='* ]] || continue
 
-        # הסר רווחים מובילים/מסתיימים מהשורה כולה
-        line="${line#"${line%%[![:space:]]*}"}"
-        line="${line%"${line##*[![:space:]]}"}"
+        line_key="${line%%=*}"
+        line_value="${line#*=}"
 
-        # בדוק פורמט: חייב להכיל = (ולא בתור תו ראשון)
-        if [[ "$line" != *'='* ]] || [[ "$line" == '='* ]]; then
-            continue
+        line_key="$(_trim "$line_key")"
+        line_value="$(_trim "$line_value")"
+
+        # מפתח לא חוקי → דילוג
+        [[ "$line_key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
+
+        # מצאנו את המפתח
+        if [[ "$line_key" == "$key" ]]; then
+            # אם הערך מוקף בגרשיים כפולים — הסרה
+            if [[ "$line_value" == \"*\" && "${#line_value}" -ge 2 ]]; then
+                line_value="${line_value:1:${#line_value}-2}"
+            fi
+
+            # ניקוי נוסף אחרי הסרת גרשיים
+            line_value="$(_trim "$line_value")"
+
+            # בדיקת תווים מסוכנים
+            if [[ "$line_value" =~ $_CONF_FORBIDDEN_REGEX ]]; then
+                echo "ERROR: [config-reader] Dangerous characters detected in value for '$key'" >&2
+                return 1
+            fi
+
+            printf '%s\n' "$line_value"
+            return 0
         fi
-
-        # חלץ KEY (עד התו = הראשון)
-        local line_key="${line%%=*}"
-        # חלץ VALUE (מהתו = הראשון עד הסוף)
-        local line_value="${line#*=}"
-
-        # הסר רווחים מסביב ל-KEY (גם whitespace מסביב ל-=)
-        line_key="${line_key#"${line_key%%[![:space:]]*}"}"
-        line_key="${line_key%"${line_key##*[![:space:]]}"}"
-
-        # הסר רווחים מסביב ל-VALUE (תומך ב-"KEY = VALUE" הודות לניקוי מוקדם)
-        line_value="${line_value#"${line_value%%[![:space:]]*}"}"
-        line_value="${line_value%"${line_value##*[![:space:]]}"}"
-
-        # וידוא: KEY לא מכיל תווים מיוחדים
-        if [[ ! "$line_key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
-            continue
-        fi
-
-        # השוואת KEY
-        if [[ "$line_key" != "$key" ]]; then
-            continue
-        fi
-
-        # ── Sanitize VALUE ──────────────────────────────────────
-        value="$line_value"
-
-        # הסר מרכאות (אם קיימות)
-        if [[ "$value" == \"*\" ]] || [[ "$value" == \'*\' ]]; then
-            value="${value:1:${#value}-2}"
-        fi
-
-        # הסר רווחים מסביב לערך (אחרי הסרת מרכאות)
-        value="${value#"${value%%[![:space:]]*}"}"
-        value="${value%"${value##*[![:space:]]}"}"
-
-        # ── בדיקת תווים מסוכנים ─────────────────────────────────
-        if [[ "$value" == *";"* || "$value" == *'$'* || "$value" == *'`'* || "$value" == *'|'* || "$value" == *'&'* || "$value" == *'<'* || "$value" == *'>'* || "$value" == *'('* || "$value" == *')'* || "$value" == *'{'* || "$value" == *'}'* || "$value" == *'['* || "$value" == *']'* || "$value" == *'!'* || "$value" == *':'* ]]; then
-            echo "ERROR: [config-reader] Dangerous characters detected in value for '$key'" >&2
-            return 1
-        fi
-
-        # ── Sanitization נוסף: הסר תווי control ─────────────────
-        sanitized=$(echo "$value" | tr -d '[:cntrl:]' 2>/dev/null)
-        if [[ "$?" -ne 0 ]]; then
-            echo "ERROR: [config-reader] Sanitization failed for '$key'" >&2
-            return 1
-        fi
-
-        echo "$sanitized"
-        return 0
     done < "$config_file"
 
-    # KEY לא נמצא
     return 1
 }
 
-# ═══════════════════════════════════════════════════════════════
-# פונקציה: get_conf_list
-# תפקיד: קריאת ערך רשימה (מופרד בפסיקים)  
-# שימוש: arr=( $(get_conf_list "KEY_NAME") )
-# ═══════════════════════════════════════════════════════════════
+# ───────────────────────────────────────────────────────────────────────
+# get_conf_list — ערכים מופרדים בפסיקים (CSV)
+# Args:
+#   $1: KEY
+#   $2: קובץ (אופציונלי)
+# Return:
+#   כל ערך בשורה נפרדת
+# ───────────────────────────────────────────────────────────────────────
 get_conf_list() {
     local key="$1"
     local config_file="${2:-$CONFIG_READER_DEFAULT_CONF}"
@@ -138,148 +138,152 @@ get_conf_list() {
 
     raw_value=$(get_conf "$key" "$config_file") || return 1
 
-    # פיצול לפי פסיקים, הסרת רווחים סביב כל פריט
     local IFS=','
     local item
     for item in $raw_value; do
-        # trim whitespace
-        item="${item#"${item%%[![:space:]]*}"}"
-        item="${item%"${item##*[![:space:]]}"}"
-        if [[ -n "$item" ]]; then
-            echo "$item"
-        fi
+        item="$(_trim "$item")"
+        [[ -n "$item" ]] && printf '%s\n' "$item"
     done
 }
 
-# ═══════════════════════════════════════════════════════════════
-# פונקציה: get_conf_int
-# תפקיד: קריאת ערך מספרי שלם עם ברירת מחדל
-# שימוש: value=$(get_conf_int "KEY_NAME" 3600)
-# ═══════════════════════════════════════════════════════════════
+# ───────────────────────────────────────────────────────────────────────
+# get_conf_int — ערך מספרי
+# Args:
+#   $1: KEY
+#   $2: DEFAULT
+#   $3: קובץ (אופציונלי)
+# ───────────────────────────────────────────────────────────────────────
 get_conf_int() {
     local key="$1"
     local default="$2"
     local config_file="${3:-$CONFIG_READER_DEFAULT_CONF}"
-    local raw_value
+    local val
 
-    raw_value=$(get_conf "$key" "$config_file") || {
-        echo "$default"
-        return 0
-    }
+    val=$(get_conf "$key" "$config_file") || { printf '%s\n' "$default"; return 0; }
 
-    # וידוא: ערך מספרי בלבד
-    if [[ "$raw_value" =~ ^[0-9]+$ ]]; then
-        echo "$raw_value"
+    if [[ "$val" =~ ^[0-9]+$ ]]; then
+        printf '%s\n' "$val"
     else
-        echo "WARN: [config-reader] Expected integer for '$key', got '$raw_value'. Using default: $default" >&2
-        echo "$default"
+        echo "WARN: [config-reader] Expected integer for '$key', got '$val'. Using default: $default" >&2
+        printf '%s\n' "$default"
     fi
-
-    return 0
 }
 
-# ═══════════════════════════════════════════════════════════════
-# פונקציה: get_conf_bool
-# תפקיד: קריאת ערך בוליאני (true/false) עם ברירת מחדל
-# שימוש: value=$(get_conf_bool "KEY_NAME" true)
-# ═══════════════════════════════════════════════════════════════
+# ───────────────────────────────────────────────────────────────────────
+# get_conf_bool — ערך בוליאני
+# Args:
+#   $1: KEY
+#   $2: DEFAULT (true/false)
+#   $3: קובץ (אופציונלי)
+# ───────────────────────────────────────────────────────────────────────
 get_conf_bool() {
     local key="$1"
     local default="$2"
     local config_file="${3:-$CONFIG_READER_DEFAULT_CONF}"
     local raw_value
 
-    raw_value=$(get_conf "$key" "$config_file") || {
-        echo "$default"
-        return 0
-    }
+    # קריאה בטוחה, אם נכשל מחזירים דיפולט
+    raw_value=$(get_conf "$key" "$config_file") || { printf '%s\n' "$default"; return 0; }
 
-    # המרה לאותיות קטנות
-    # raw_value=$(echo "$raw_value" | tr '[:upper:]' '[:lower:]')
-    raw_value=$(echo "$raw_value" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
+    # המרה ל-lowercase ללא subprocess
+    raw_value="${raw_value,,}"
+    # הסרת רווחים מהקצוות בלבד בעזרת פונקציית ה-trim הקיימת שלך
+    raw_value="$(_trim "$raw_value")"
 
     case "$raw_value" in
-        true|yes|1|on)
-            echo "true"
-            ;;
-        false|no|0|off)
-            echo "false"
-            ;;
+        true|yes|1|on)  printf 'true\n' ;;
+        false|no|0|off) printf 'false\n' ;;
         *)
             echo "WARN: [config-reader] Expected boolean for '$key', got '$raw_value'. Using default: $default" >&2
-            
-            echo "$default"
+            printf '%s\n' "$default"
             ;;
     esac
-
     return 0
 }
 
-# ═══════════════════════════════════════════════════════════════
-# פונקציה: validate_config_file
-# תפקיד: בדיקת תקינות מלאה של קובץ קונפיג
-# שימוש: validate_config_file ["/path/to/config"]
-# ═══════════════════════════════════════════════════════════════
+# ───────────────────────────────────────────────────────────────────────
+# validate_config_file — ולידציה מלאה של קובץ קונפיגורציה
+# Args:
+#   $1: קובץ קונפיגורציה (אופציונלי, ברירת מחדל: $CONFIG_READER_DEFAULT_CONF)
+# Return:
+#   VALIDATION_OK  – אם הקובץ תקין לחלוטין
+#   VALIDATION_FAILED – אם נמצאו שגיאות (קוד יציאה 1)
+# תפקיד:
+#   • בדיקת תקינות תחבירית של KEY=VALUE
+#   • מניעת Shell Injection באמצעות Regex קשיח
+#   • תמיכה בערכים עם גרשיים כפולים
+#   • Zero‑Subprocess (ללא grep/sed/awk)
+#   • בטוח לחלוטין תחת set -euo pipefail
+# ───────────────────────────────────────────────────────────────────────
 validate_config_file() {
     local config_file="${1:-$CONFIG_READER_DEFAULT_CONF}"
     local line_num=0
     local line
     local errors=0
 
+    # בדיקה ראשונית: האם הקובץ קיים?
     if [[ ! -f "$config_file" ]]; then
         echo "ERROR: Config file not found: $config_file"
         return 1
     fi
 
+    # קריאה שורה-שורה, כולל שורה אחרונה ללא \n
     while IFS= read -r line || [[ -n "$line" ]]; do
-        ((line_num++))
+        
+        # השמה אריתמטית בטוחה לחלוטין תחת set -e
+        # (בניגוד ל-((line_num++)) שיקרוס באיטרציה הראשונה)
+        line_num=$((line_num + 1))
 
-        # הסר רווחים מובילים
-        line="${line#"${line%%[![:space:]]*}"}"
+        # ניקוי רווחים
+        line="$(_trim "$line")"
 
-        # דלג על שורות ריקות והערות
-        [[ -z "$line" ]] && continue
-        [[ "$line" == '#'* ]] && continue
+        # דילוג על שורות ריקות או הערות
+        [[ -z "$line" || "$line" == '#'* ]] && continue
 
-        # בדיקה: חייב להכיל =
+        # חייב להכיל '='
         if [[ "$line" != *'='* ]]; then
             echo "ERROR:${config_file}:${line_num}: Missing '=' delimiter"
-            ((errors++))
+            errors=$((errors + 1))
             continue
         fi
 
-        # בדיקה: KEY לא יכול להתחיל ב-=
+        # לא יכול להתחיל ב'=' → KEY ריק
         if [[ "$line" == '='* ]]; then
             echo "ERROR:${config_file}:${line_num}: KEY is empty (line starts with '=')"
-            ((errors++))
+            errors=$((errors + 1))
             continue
         fi
 
-        # חלץ KEY
+        # פיצול KEY=VALUE
         local k="${line%%=*}"
-        # הסר רווחים
-        k="${k#"${k%%[![:space:]]*}"}"
-        k="${k%"${k##*[![:space:]]}"}"
+        local v="${line#*=}"
 
-        # בדיקת KEY format
+        k="$(_trim "$k")"
+        v="$(_trim "$v")"
+
+        # בדיקת תקינות KEY (אות/קו תחתון בתחילת מחרוזת)
         if [[ ! "$k" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
             echo "ERROR:${config_file}:${line_num}: Invalid KEY format: '$k'"
-            ((errors++))
+            errors=$((errors + 1))
         fi
 
-        # חלץ VALUE (אחרי = הראשון)
-        local v="${line#*=}"
-        # trim
-        v="${v#"${v%%[![:space:]]*}"}"
+        # אם הערך מוקף בגרשיים כפולים — קילוף
+        # "DEBUG" → DEBUG
+        if [[ "$v" == \"*\" && "${#v}" -ge 2 ]]; then
+            v="${v:1:${#v}-2}"
+            v="$(_trim "$v")"
+        fi
 
-        # בדיקת תווים מסוכנים ב-VALUE
-        if [[ "$v" == *";"* || "$v" == *'$'* || "$v" == *'`'* || "$v" == *'|'* || "$v" == *'&'* || "$v" == *'<'* || "$v" == *'>'* || "$v" == *'('* || "$v" == *')'* || "$v" == *'{'* || "$v" == *'}'* || "$v" == *'['* || "$v" == *']'* || "$v" == *'!'* || "$v" == *':'* ]]; then
+        # בדיקת תווים מסוכנים לפי ה-Regex המקורי (הכי בטוח)
+        # זה מונע Shell Injection בקונפיגורציה
+        if [[ "$v" =~ $_CONF_FORBIDDEN_REGEX ]]; then
             echo "ERROR:${config_file}:${line_num}: Dangerous characters in VALUE"
-            ((errors++))
+            errors=$((errors + 1))
         fi
 
     done < "$config_file"
 
+    # סיכום
     if [[ $errors -gt 0 ]]; then
         echo "VALIDATION_FAILED: $errors error(s) found"
         return 1
