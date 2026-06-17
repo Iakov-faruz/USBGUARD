@@ -11,11 +11,13 @@ CONFIG_FILE="/etc/usbguard/approval-manager.conf"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB_DIR="${SCRIPT_DIR}/lib"
 
-# טעינת ספריית הקריאה המרכזית - החלפה של ה-grep -oP המקומי
-source "${LIB_DIR}/config-reader.sh" 2>/dev/null || { 
+# טעינת ספריית הקריאה המרכזית - מחליפה את פונקציית get_conf המקומית
+if [[ -f "${LIB_DIR}/config-reader.sh" ]]; then
+    source "${LIB_DIR}/config-reader.sh"
+else 
     echo "FATAL: config-reader.sh missing in ${LIB_DIR}" >&2
     exit 1 
-}
+fi
 
 SLEEP_INTERVAL=5
 WATCH_MODE=false
@@ -122,6 +124,7 @@ check_rules_count() {
     local file="$1"
     if [[ -n "$file" && -f "$file" ]]; then
         local count
+        # ספירה מדויקת יותר של חוקים פעילים (allow/block/reject)
         count=$(grep -cE '^[[:space:]]*(allow|block|reject)' "$file" 2>/dev/null || echo "0")
         echo "$count"
     else
@@ -190,8 +193,10 @@ check_last_reaper_run() {
     if [[ -f "$state_file" ]]; then
         local epoch
         epoch=$(cat "$state_file" 2>/dev/null || echo "0")
+        # בדיקה בטוחה שהערך הוא מספר חיובי
         if [[ "$epoch" =~ ^[0-9]+$ ]] && [[ "$epoch" -gt 0 ]]; then
             local last_run
+            # ניסיון עם date GNU, נפילה ל-date BSD אם נדרש
             last_run=$(date -d "@$epoch" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || date -r "$epoch" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "Epoch: $epoch")
             echo "$last_run"
         else

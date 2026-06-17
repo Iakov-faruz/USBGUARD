@@ -231,7 +231,6 @@ validate_config_file() {
     while IFS= read -r line || [[ -n "$line" ]]; do
         
         # השמה אריתמטית בטוחה לחלוטין תחת set -e
-        # (בניגוד ל-((line_num++)) שיקרוס באיטרציה הראשונה)
         line_num=$((line_num + 1))
 
         # ניקוי רווחים

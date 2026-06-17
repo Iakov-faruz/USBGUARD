@@ -71,28 +71,36 @@ create_backup() {
 rotate_backups() {
     local backup_dir="${1:-$BACKUP_DEFAULT_DIR}"
     local keep="${2:-$BACKUP_DEFAULT_KEEP}"
-    local count
+    local count to_delete i
+    local backups=()
+    local old_nullglob=false
 
     if [[ ! -d "$backup_dir" ]]; then
         log_debug "BACKUP" "Backup directory does not exist, no rotation needed"
         return 0
     fi
 
-    # Count existing backups
-    count=$(ls -1 "${backup_dir}/rules_"*.tar.gz 2>/dev/null | wc -l)
+    if shopt -q nullglob; then
+        old_nullglob=true
+    fi
+    shopt -s nullglob
+    backups=("${backup_dir}"/rules_*.tar.gz)
+    if [[ "$old_nullglob" == "false" ]]; then
+        shopt -u nullglob
+    fi
+
+    count=${#backups[@]}
 
     if [[ $count -le $keep ]]; then
         log_debug "BACKUP" "No rotation needed (${count} <= ${keep})"
         return 0
     fi
 
-    # Remove oldest backups beyond keep limit (safe for paths with spaces)
-    local to_delete=$((count - keep))
-    while IFS= read -r old_backup; do
-        [[ -z "$old_backup" ]] && continue
-        rm -f "$old_backup" 2>/dev/null && \
-            log_info "BACKUP" "Rotated out old backup: $(basename "$old_backup")"
-    done < <(ls -1t "${backup_dir}/rules_"*.tar.gz 2>/dev/null | tail -n "$to_delete")
+    to_delete=$((count - keep))
+    for ((i=0; i<to_delete; i++)); do
+        rm -f "${backups[$i]}" 2>/dev/null && \
+            log_info "BACKUP" "Rotated out old backup: $(basename "${backups[$i]}")"
+    done
 
     return 0
 }
@@ -107,19 +115,29 @@ restore_latest_backup() {
     local rules_dir="${2:-$BACKUP_DEFAULT_RULES_DIR}"
     local temp_restore_dir
     local latest_backup
+    local backups=()
+    local old_nullglob=false
 
     if [[ ! -d "$backup_dir" ]]; then
         log_error "BACKUP" "Cannot restore: backup directory missing: $backup_dir"
         return 1
     fi
 
-    # Find latest backup
-    latest_backup=$(ls -1t "${backup_dir}/rules_"*.tar.gz 2>/dev/null | head -1)
+    if shopt -q nullglob; then
+        old_nullglob=true
+    fi
+    shopt -s nullglob
+    backups=("${backup_dir}"/rules_*.tar.gz)
+    if [[ "$old_nullglob" == "false" ]]; then
+        shopt -u nullglob
+    fi
 
-    if [[ -z "$latest_backup" ]]; then
+    if [[ ${#backups[@]} -eq 0 ]]; then
         log_error "BACKUP" "Cannot restore: no backups found in: $backup_dir"
         return 1
     fi
+
+    latest_backup="${backups[$((${#backups[@]} - 1))]}"
 
     # ── Create temp directory for extraction ──────────────────
     temp_restore_dir=$(mktemp -d -t usbguard_restore_XXXXXX 2>/dev/null) || {
@@ -164,21 +182,31 @@ restore_latest_backup() {
 # ═══════════════════════════════════════════════════════════════
 list_backups() {
     local backup_dir="${1:-$BACKUP_DEFAULT_DIR}"
+    local backups=()
+    local old_nullglob=false
+    local backup_file i
 
     if [[ ! -d "$backup_dir" ]]; then
         echo "No backups directory: $backup_dir"
         return 1
     fi
 
-    local backups
-    backups=$(ls -1t "${backup_dir}/rules_"*.tar.gz 2>/dev/null)
+    if shopt -q nullglob; then
+        old_nullglob=true
+    fi
+    shopt -s nullglob
+    backups=("${backup_dir}"/rules_*.tar.gz)
+    if [[ "$old_nullglob" == "false" ]]; then
+        shopt -u nullglob
+    fi
 
-    if [[ -z "$backups" ]]; then
+    if [[ ${#backups[@]} -eq 0 ]]; then
         echo "No backups found in: $backup_dir"
         return 1
     fi
 
-    echo "$backups" | while read -r backup_file; do
+    for ((i=${#backups[@]}-1; i>=0; i--)); do
+        backup_file="${backups[$i]}"
         local size
         size=$(du -h "$backup_file" 2>/dev/null | cut -f1)
         echo "$(basename "$backup_file") (${size})"

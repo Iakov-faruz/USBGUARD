@@ -2,6 +2,14 @@
 set -euo pipefail
 
 CONFIG_FILE="/etc/usbguard/approval-manager.conf"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LIB_DIR="${SCRIPT_DIR}/lib"
+
+source "${LIB_DIR}/config-reader.sh" 2>/dev/null || {
+    echo "healthcheck: config-reader.sh missing: ${LIB_DIR}/config-reader.sh" >&2
+    exit 1
+}
+
 INCLUDE_DAEMON=false
 
 usage() {
@@ -66,12 +74,12 @@ require_writable_dir() {
 
 require_file "$CONFIG_FILE" "configuration file"
 
-rules_system=$(grep -oP '^RULES_SYSTEM=\K.*' "$CONFIG_FILE" 2>/dev/null || echo "/etc/usbguard/rules.d/00-system.rules")
-rules_permanent=$(grep -oP '^RULES_PERMANENT=\K.*' "$CONFIG_FILE" 2>/dev/null || echo "/etc/usbguard/rules.d/50-permanent.rules")
-rules_temporary=$(grep -oP '^RULES_TEMPORARY=\K.*' "$CONFIG_FILE" 2>/dev/null || echo "/etc/usbguard/rules.d/90-temporary.rules")
-backup_dir=$(grep -oP '^BACKUP_DIR=\K.*' "$CONFIG_FILE" 2>/dev/null || echo "/etc/usbguard/backups")
-state_dir=$(grep -oP '^STATE_DIR=\K.*' "$CONFIG_FILE" 2>/dev/null || echo "/var/lib/usbguard-manager")
-log_file=$(grep -oP '^LOG_FILE=\K.*' "$CONFIG_FILE" 2>/dev/null || echo "/var/log/usbguard-approval.log")
+rules_system=$(get_conf "RULES_SYSTEM" "$CONFIG_FILE" 2>/dev/null) || rules_system="/etc/usbguard/rules.d/00-system.rules"
+rules_permanent=$(get_conf "RULES_PERMANENT" "$CONFIG_FILE" 2>/dev/null) || rules_permanent="/etc/usbguard/rules.d/50-permanent.rules"
+rules_temporary=$(get_conf "RULES_TEMPORARY" "$CONFIG_FILE" 2>/dev/null) || rules_temporary="/etc/usbguard/rules.d/90-temporary.rules"
+backup_dir=$(get_conf "BACKUP_DIR" "$CONFIG_FILE" 2>/dev/null) || backup_dir="/etc/usbguard/backups"
+state_dir=$(get_conf "STATE_DIR" "$CONFIG_FILE" 2>/dev/null) || state_dir="/var/lib/usbguard-manager"
+log_file=$(get_conf "LOG_FILE" "$CONFIG_FILE" 2>/dev/null) || log_file="/var/log/usbguard-approval.log"
 
 require_dir "$(dirname "$rules_system")" "rules directory"
 require_file "$rules_system" "system rules file"

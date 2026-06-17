@@ -237,7 +237,21 @@ install_system_packages() {
     # בדיקת עדכונים זמינים (רשימת חבילות שניתן לשדרג)
     if command -v apt-get &>/dev/null; then
         apt-get update -qq 2>/dev/null
-        upgradable_pkgs=($(apt list --upgradable 2>/dev/null | grep -oP '^[^/]+' | grep -xF -f <(printf "%s\n" "${packages[@]}") || true))
+        local upgradable_output upgradable_line pkg_name pkg
+        upgradable_pkgs=()
+        if upgradable_output=$(apt list --upgradable 2>/dev/null); then
+            while IFS= read -r upgradable_line; do
+                [[ "$upgradable_line" == /* ]] || continue
+                pkg_name="${upgradable_line#*/}"
+                pkg_name="${pkg_name%%/*}"
+                for pkg in "${packages[@]}"; do
+                    if [[ "$pkg_name" == "$pkg" ]]; then
+                        upgradable_pkgs+=("$pkg")
+                        break
+                    fi
+                done
+            done <<< "$upgradable_output"
+        fi
     fi
 
     # הצגת סיכום למשתמש

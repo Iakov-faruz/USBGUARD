@@ -189,7 +189,7 @@ for f in \
     scripts/lib/stages-io.sh \
     scripts/lib/device-utils.sh \
     scripts/usb-approve.sh \
-    scripts/detect-host-input.sh \          # ✅ קריטי: זיהוי מקלדת/עכבר מקומיים
+    scripts/detect-host-input.sh \
     scripts/cleanup-expired.sh \
     scripts/backup-rules.sh \
     scripts/restore-rules.sh \
@@ -648,9 +648,9 @@ done
 section "Section 19: Line Ending Checks"
 crlf_count=0
 for script in scripts/lib/logger.sh scripts/lib/config-reader.sh scripts/usb-approve.sh scripts/cleanup-expired.sh scripts/badusb-monitor.py install.sh master-checklist.sh; do
-    if grep -qP '\r' "$PROJECT_ROOT/$script" 2>/dev/null; then 
+    if grep -q $'\r' "$PROJECT_ROOT/$script" 2>/dev/null; then 
         fail "CRLF found in: $script"
-        ((crlf_count++))
+        crlf_count=$((crlf_count + 1))
     fi
 done
 [[ $crlf_count -eq 0 ]] && pass "No CRLF found in main scripts"

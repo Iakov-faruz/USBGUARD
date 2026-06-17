@@ -66,15 +66,27 @@ main() {
 
     local backup_list=()
     local index=0
+    local backups=()
+    local old_nullglob=false
+
+    if shopt -q nullglob; then
+        old_nullglob=true
+    fi
+    shopt -s nullglob
+    backups=("${BACKUP_DIR}"/rules_*.tar.gz)
+    if [[ "$old_nullglob" == "false" ]]; then
+        shopt -u nullglob
+    fi
 
     # סריקת כל קבצי הגיבוי בפורמט rules_*.tar.gz (ממוינים מהחדש לישן)
-    while IFS= read -r backup_file_path; do
+    local backup_file_path
+    for ((index=${#backups[@]}-1; index>=0; index--)); do
+        backup_file_path="${backups[$index]}"
         local size
         size=$(du -h "$backup_file_path" 2>/dev/null | cut -f1)
         echo "$index) $(basename "$backup_file_path") (${size})"
         backup_list+=("$backup_file_path")
-        ((index++))
-    done < <(ls -1t "${BACKUP_DIR}/rules_"*.tar.gz 2>/dev/null)
+    done
 
     # אם אין גיבויים – יציאה עם שגיאה
     if [[ ${#backup_list[@]} -eq 0 ]]; then
