@@ -88,6 +88,41 @@ run_cmd() {
     return 0
 }
 
+normalize_deployed_line_endings() {
+    if ! command -v dos2unix >/dev/null 2>&1; then
+        log_warn "dos2unix not found; skipping deployed line-ending normalization"
+        return 0
+    fi
+
+    find /etc/usbguard -type f \( \
+        -name "*.sh" -o \
+        -name "*.py" -o \
+        -name "*.conf" -o \
+        -name "*.rules" -o \
+        -name "*.service" -o \
+        -name "*.timer" -o \
+        -name "*.html" -o \
+        -name "*.css" -o \
+        -name "*.js" \
+    \) -exec dos2unix {} + 2>/dev/null || true
+}
+
+fix_deployed_permissions() {
+    run_cmd chown root:usbadmins "/etc/usbguard"
+    run_cmd chmod 750 "/etc/usbguard"
+    run_cmd chown root:root "/etc/usbguard/rules.d"
+    run_cmd chmod 750 "/etc/usbguard/rules.d"
+    run_cmd chown root:root "/etc/usbguard/scripts/lib"
+    run_cmd chmod 750 "/etc/usbguard/scripts/lib"
+    run_cmd chown root:root "/etc/usbguard/backups"
+    run_cmd chmod 700 "/etc/usbguard/backups"
+    run_cmd chown root:root "/var/lib/usbguard-manager"
+    run_cmd chmod 700 "/var/lib/usbguard-manager"
+    run_cmd touch "/var/log/usbguard-approval.log"
+    run_cmd chown root:usbadmins "/var/log/usbguard-approval.log"
+    run_cmd chmod 640 "/var/log/usbguard-approval.log"
+}
+
 # בדיקה שקובץ מסוים קיים – אם לא, מדפיס שגיאה ומחזיר 1 (נעשה שימוש בבדיקות טיסה)
 verify_file() {
     local path="$1"
@@ -330,6 +365,7 @@ setup_directories() {
     log_section "Step 3/8: Creating Directory Structure"
 
     local dirs=(
+        "/etc/usbguard"
         "/etc/usbguard/rules.d"            # קבצי כללי USBGuard
         "/etc/usbguard/scripts/lib"        # ספריות עזר לסקריפטים
         "/etc/usbguard/backups"            # גיבויים של כללים
@@ -418,9 +454,9 @@ deploy_files() {
         run_cmd chmod 600 "/etc/usbguard/rules.d/$rule"
         run_cmd chown root:root "/etc/usbguard/rules.d/$rule"
     done
-    # הרשאות לתיקיית הכללים: root ו-usbadmins יכולים לקרוא/לכתוב
+    # הרשאות לתיקיית הכללים: root בלבד לכתוב, קבוצת usbadmins לקריאה
     run_cmd chmod 750 "/etc/usbguard/rules.d"
-    run_cmd chown root:usbadmins "/etc/usbguard/rules.d"
+    run_cmd chown root:root "/etc/usbguard/rules.d"
 
     # 5.3 סקריפטים ראשיים (כולל detect-host-input.sh)
     log_info "Deploying main scripts..."
@@ -464,6 +500,7 @@ deploy_files() {
         retry.sh            # retry with exponential backoff
         telemetry.sh        # audit JSONL and metrics
         rules-validator.sh  # USBGuard rule schema validation
+        policy-sync.sh      # merge rules.d into usbguard rules.conf
         network-lockdown.sh # nftables helper
     )
 
@@ -497,6 +534,9 @@ deploy_files() {
 
     # בעלות על קבצי ה-web: root עם קבוצת usbadmins (לקבוצה יש קריאה)
     run_cmd chown -R root:usbadmins "/etc/usbguard/web"
+
+    normalize_deployed_line_endings
+    fix_deployed_permissions
 
     log_ok "All configuration and scripts deployed"
     return 0

@@ -1,6 +1,6 @@
 # USBGuard Approval Manager v3.0
 
-מערכת לניהול, ניטור ובקרה של התקני USB, מעל מנוע האכיפה `usbguard`.  
+מערכת לניהול, ניטור ובקרה של התקני USB, מעל מנוע האכיפה `usbguard`.
 כוללת ממשק Web, ממשק TUI לשליטה ישירה, ניטור BadUSB אוטומטי, ו-API REST מלא.
 
 ---
@@ -40,23 +40,23 @@
 
 ```
 web/app.py ──── usbguard-python ──── USBGuard Daemon (IPC)
-    │                                   
+    │
     └──── subprocess ("usbguard list-devices") ──┘ (גיבוי)
 
 scripts/badusb-monitor.py ──── evdev ──── POST /api/block
 ```
 
-**מסלול מהיר:** Flask → usbguard-python (IPC) → USBGuard Daemon  
-**מסלול גיבוי:** Flask → subprocess → USBGuard Daemon  
+**מסלול מהיר:** Flask → usbguard-python (IPC) → USBGuard Daemon
+**מסלול גיבוי:** Flask → subprocess → USBGuard Daemon
 **BadUSB:** evdev → Events Per Second → חסימה אוטומטית דרך ה-API
 
 ---
 
 ## דרישות מערכת
 
-- Linux (Kernel 4.15+)  
-- Bash 5.0+, Python 3.8+  
-- USBGuard 1.1.2+, systemd 245+, sudo  
+- Linux (Kernel 4.15+)
+- Bash 5.0+, Python 3.8+
+- USBGuard 1.1.2+, systemd 245+, sudo
 - חבילות Python: Flask, Flask-Limiter, (usbguard-python, evdev – אופציונליים)
 
 ---

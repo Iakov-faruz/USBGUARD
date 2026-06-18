@@ -65,9 +65,9 @@ check_file_perms() {
     perms=$(stat -L -c "%a" "$file" 2>/dev/null || echo "???")
     owner=$(stat -L -c "%U:%G" "$file" 2>/dev/null || echo "???:???")
     
-    if [[ "$perms" == "$expected_perms" ]] && [[ "$owner" == "root:root" ]]; then 
+    if [[ ("$perms" == "600" || "$perms" == "640") && "$owner" == "root:root" ]]; then
         echo "ok"
-    elif [[ "$perms" != "$expected_perms" ]]; then 
+    elif [[ "$perms" != "600" && "$perms" != "640" ]]; then
         echo "bad_perms:${perms}"
     elif [[ "$owner" != "root:root" ]]; then 
         echo "bad_owner:${owner}"
@@ -182,9 +182,9 @@ check_config_file() {
     local perms_status
     perms_status=$(check_file_perms "$CONFIG_FILE" "640")
     case "$perms_status" in
-        ok) check "approval-manager.conf" "pass" "Exists, permissions 640, root:root" ;;
+        ok) check "approval-manager.conf" "pass" "Exists, permissions accepted, root:root" ;;
         missing) check "approval-manager.conf" "fail" "FILE NOT FOUND" ;;
-        bad_perms:*) check "approval-manager.conf" "warn" "Bad permissions: ${perms_status#bad_perms:} (expected 640)" ;;
+        bad_perms:*) check "approval-manager.conf" "warn" "Bad permissions: ${perms_status#bad_perms:} (expected 600 or 640)" ;;
         bad_owner:*) check "approval-manager.conf" "warn" "Bad owner: ${perms_status#bad_owner:} (expected root:root)" ;;
     esac
 
@@ -210,7 +210,8 @@ check_config_file() {
         "ALLOWED_USERS" "ALLOWED_GROUPS"
         "CHECK_DUPLICATES" "LOG_LEVEL"
         "NETWORK_LOCKDOWN_ENABLED" "NETWORK_LOCKDOWN_POLICY"
-        "NETWORK_LOCKDOWN_ALLOW_LOCALHOST" "MASS_STORAGE_POLICY"
+        "NETWORK_LOCKDOWN_ALLOW_LOCALHOST" "NETWORK_LOCKDOWN_ALLOW_SSH"
+        "NETWORK_LOCKDOWN_ALLOW_CIDRS" "MASS_STORAGE_POLICY"
         "MIN_REASONABLE_EPOCH" "MAX_CLOCK_JUMP_SECONDS"
         "TELEMETRY_ENABLED" "AUDIT_LOG_FILE" "METRICS_FILE"
     )
@@ -317,36 +318,40 @@ check_directories() {
     fi
 
     # בניית מערך התיקיות באופן דינמי
-    local dirs=("/etc/usbguard:700")
+    local dirs=("/etc/usbguard:750:root:usbadmins")
     
     if [[ -n "$rules_dir" && "$rules_dir" != "." ]]; then
-        dirs+=("${rules_dir}:750")
+        dirs+=("${rules_dir}:750:root:root")
     fi
     
     dirs+=(
-        "/etc/usbguard/scripts:755"
-        "/etc/usbguard/scripts/lib:640"
-        "$BACKUP_DIR:700"
-        "$STATE_DIR:700"
+        "/etc/usbguard/scripts:755:root:root"
+        "/etc/usbguard/scripts/lib:750:root:root"
+        "$BACKUP_DIR:700:root:root"
+        "$STATE_DIR:700:root:root"
     )
 
     for entry in "${dirs[@]}"; do
         local dir="${entry%%:*}"
-        local expected_perms="${entry##*:}"
+        local rest="${entry#*:}"
+        local expected_perms="${rest%%:*}"
+        local expected_owner="${rest#*:}"
 
+        # בדיקה שהתיקייה קיימת
         if [[ ! -d "$dir" ]]; then
             check "$(basename "$dir")" "warn" "Directory not found: $dir"
             continue
         fi
 
+        # קריאת הרשאות ובעלים בפועל
         local perms owner
         perms=$(stat -L -c "%a" "$dir" 2>/dev/null || echo "???")
         owner=$(stat -L -c "%U:%G" "$dir" 2>/dev/null || echo "???:???")
 
-        if [[ "$perms" == "$expected_perms" ]] && [[ "$owner" == "root:root" ]]; then
+        if [[ "$perms" == "$expected_perms" ]] && [[ "$owner" == "$expected_owner" ]]; then
             check "$(basename "$dir")" "pass" "Exists, permissions $expected_perms"
         else
-            check "$(basename "$dir")" "warn" "Exists but perms=$perms owner=$owner (expected $expected_perms root:root)"
+            check "$(basename "$dir")" "warn" "Exists but perms=$perms owner=$owner (expected $expected_perms $expected_owner)"
         fi
     done
 }
@@ -418,7 +423,7 @@ check_systemd_services() {
     )
 
     for service in "${services[@]}"; do
-        if systemctl list-unit-files 2>/dev/null | grep -q "^${service}"; then
+        if systemctl list-unit-files --no-legend "$service" >/dev/null 2>&1; then
             if systemctl is-active --quiet "$service" 2>/dev/null; then
                 check "$service" "pass" "Active / Running"
             else

@@ -25,12 +25,8 @@
 readonly CONFIG_READER_DEFAULT_CONF="/etc/usbguard/approval-manager.conf"
 
 # רשימת תווים אסורים בהחלט בערכי קונפיגורציה (מניעת Shell Injection)
-# כולל: $, `, |, &, <, >, (, ), {, }, [, ], !, :, ;
-readonly _CONF_FORBIDDEN_REGEX='[\$\`\|\&\<\>\(\)\{\}
-
-\[\]
-
-\!\:\;]'
+# כולל: $, `, |, &, <, >, (, ), {, }, [, ], !, ;
+readonly _CONF_FORBIDDEN_CHARS='$`|&<>(){}[]!;'
 
 # ───────────────────────────────────────────────────────────────────────
 # פונקציית עזר: _trim
@@ -43,6 +39,20 @@ _trim() {
     # הסרת רווחים בסוף המחרוזת
     s="${s%"${s##*[![:space:]]}"}"
     printf '%s' "$s"
+}
+
+_conf_contains_forbidden_char() {
+    local value="$1"
+    local i ch
+    for ((i = 0; i < ${#value}; i++)); do
+        ch="${value:i:1}"
+        case "$ch" in
+            '$'|'`'|'|'|'&'|'<'|'>'|'('|')'|'{'|'}'|'['|']'|'!'|';')
+                return 0
+                ;;
+        esac
+    done
+    return 1
 }
 
 # ───────────────────────────────────────────────────────────────────────
@@ -110,7 +120,7 @@ get_conf() {
             line_value="$(_trim "$line_value")"
 
             # בדיקת תווים מסוכנים
-            if [[ "$line_value" =~ $_CONF_FORBIDDEN_REGEX ]]; then
+            if _conf_contains_forbidden_char "$line_value"; then
                 echo "ERROR: [config-reader] Dangerous characters detected in value for '$key'" >&2
                 return 1
             fi
@@ -273,9 +283,8 @@ validate_config_file() {
             v="$(_trim "$v")"
         fi
 
-        # בדיקת תווים מסוכנים לפי ה-Regex המקורי (הכי בטוח)
-        # זה מונע Shell Injection בקונפיגורציה
-        if [[ "$v" =~ $_CONF_FORBIDDEN_REGEX ]]; then
+        # בדיקת תווים מסוכנים
+        if _conf_contains_forbidden_char "$v"; then
             echo "ERROR:${config_file}:${line_num}: Dangerous characters in VALUE"
             errors=$((errors + 1))
         fi

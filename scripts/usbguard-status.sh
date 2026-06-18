@@ -124,8 +124,9 @@ check_rules_count() {
     local file="$1"
     if [[ -n "$file" && -f "$file" ]]; then
         local count
-        # ספירה מדויקת יותר של חוקים פעילים (allow/block/reject)
-        count=$(grep -cE '^[[:space:]]*(allow|block|reject)' "$file" 2>/dev/null || echo "0")
+        count=$(grep -cE '^[[:space:]]*(allow|block|reject)' "$file" 2>/dev/null || true)
+        count="${count:-0}"
+        [[ "$count" =~ ^[0-9]+$ ]] || count=0
         echo "$count"
     else
         echo "0"
@@ -282,8 +283,12 @@ show_dashboard() {
     echo -e "${COLOR_BOLD}── Connected USB Devices ──────────────────────────────────${COLOR_RESET}"
     if command -v usbguard &>/dev/null; then
         local allowed blocked
-        allowed=$(usbguard list-devices --allowed 2>/dev/null | grep -cE '^[0-9]+:' || echo "0")
-        blocked=$(usbguard list-devices --blocked 2>/dev/null | grep -cE '^[0-9]+:' || echo "0")
+        allowed=$(usbguard list-devices --allowed 2>/dev/null | grep -cE '^[0-9]+:' || true)
+        blocked=$(usbguard list-devices --blocked 2>/dev/null | grep -cE '^[0-9]+:' || true)
+        allowed="${allowed:-0}"
+        blocked="${blocked:-0}"
+        [[ "$allowed" =~ ^[0-9]+$ ]] || allowed=0
+        [[ "$blocked" =~ ^[0-9]+$ ]] || blocked=0
         printf "  %-30s : %s\n" "Allowed devices" "$allowed"
         printf "  %-30s : %s\n" "Blocked devices" "$blocked"
     else

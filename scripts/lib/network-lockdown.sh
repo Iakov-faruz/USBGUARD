@@ -42,9 +42,11 @@ network_lockdown_require_nft() {
 }
 
 network_lockdown_generate() {
-    local policy allow_local
+    local policy allow_local allow_ssh allow_cidrs
     policy=$(network_lockdown_get_conf "NETWORK_LOCKDOWN_POLICY" "drop")
     allow_local=$(network_lockdown_get_conf "NETWORK_LOCKDOWN_ALLOW_LOCALHOST" "true")
+    allow_ssh=$(network_lockdown_get_conf "NETWORK_LOCKDOWN_ALLOW_SSH" "true")
+    allow_cidrs=$(network_lockdown_get_conf "NETWORK_LOCKDOWN_ALLOW_CIDRS" "")
     case "$policy" in
         drop|reject) ;;
         *) echo "ERROR: invalid NETWORK_LOCKDOWN_POLICY: $policy" >&2; return 1 ;;
@@ -55,6 +57,25 @@ table inet ${NETWORK_LOCKDOWN_TABLE} {
         type filter hook input priority -100; policy ${policy};
         ct state established,related accept
 EOF
+    if [[ "$allow_ssh" == "true" || "$allow_ssh" == "1" || "$allow_ssh" == "yes" || "$allow_ssh" == "on" ]]; then
+        cat <<'EOF'
+        tcp dport 22 accept
+EOF
+    fi
+    if [[ -n "$allow_cidrs" ]]; then
+        local cidr
+        local IFS=','
+        for cidr in $allow_cidrs; do
+            cidr="${cidr#"${cidr%%[![:space:]]*}"}"
+            cidr="${cidr%"${cidr##*[![:space:]]}"}"
+            [[ -n "$cidr" ]] || continue
+            if [[ "$cidr" == *:* ]]; then
+                printf '        ip6 saddr %s accept\n' "$cidr"
+            else
+                printf '        ip saddr %s accept\n' "$cidr"
+            fi
+        done
+    fi
     if [[ "$allow_local" == "true" || "$allow_local" == "1" || "$allow_local" == "yes" || "$allow_local" == "on" ]]; then
         cat <<'EOF'
         iifname "lo" accept

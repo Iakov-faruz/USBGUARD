@@ -119,6 +119,24 @@ log_warn()     { _log "$LOG_LEVEL_WARN" "$@"; }
 log_error()    { _log "$LOG_LEVEL_ERROR" "$@"; }
 log_critical() { _log "$LOG_LEVEL_CRITICAL" "$@"; }
 
+log_audit() {
+    local component="$1"
+    shift || true
+    if declare -F emit_audit_event >/dev/null 2>&1; then
+        emit_audit_event "$component" "log" "info" "$*"
+        return $?
+    fi
+    printf '[AUDIT] [%s] %s\n' "$component" "$*" >> "$LOGGER_ACTIVE_LOG" 2>/dev/null || true
+}
+
+log_session_summary() {
+    local component="$1"
+    local message="$2"
+    local exit_code="${3:-0}"
+    local duration_sec="${4:-0}"
+    log_info "$component" "SESSION_SUMMARY message=${message} exit_code=${exit_code} duration_sec=${duration_sec}"
+}
+
 # ───────────────────────────────────────────────────────────────────────
 # פונקציה: init_logger
 # תפקיד: אתחול מערכת הלוג, יצירת מבנה התיקיות והקשחת הרשאות

@@ -154,11 +154,15 @@ PY
             --dry-run|-n)
                 DRY_RUN_ACTIVE=true; shift ;;
             --block)
+                if [[ "${2:-}" == "--vidpid" || "${2:-}" == "-v" ]]; then
+                    shift
+                    continue
+                fi
                 validate_device_id "$2" || exit 1
                 block_device_id="$2"
                 shift 2
                 ;;
-            --vidpid)
+            --vidpid|-v)
                 validate_vidpid "$2" || exit 1
                 block_vid_pid="${2,,}"
                 shift 2
