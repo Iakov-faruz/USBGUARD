@@ -18,7 +18,8 @@ import json
 import tempfile
 import logging
 import sys
-from flask import Flask, render_template, jsonify, request
+import secrets
+from flask import Flask, render_template, jsonify, request, session
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 
@@ -71,6 +72,7 @@ def setup_file_logging(log_file='/var/log/usbguard-web.log'):
 setup_file_logging()
 
 app = Flask(__name__)
+app.secret_key = os.environ.get('FLASK_SECRET_KEY', secrets.token_hex(32))
 
 # Rate Limiter
 if DEBUG_MODE:
@@ -88,6 +90,36 @@ else:
 LOG_FILE = "/var/log/usbguard-approval.log"
 RULES_DIR = "/etc/usbguard/rules.d"
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CSRF Protection
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _get_csrf_token():
+    if 'csrf_token' not in session:
+        session['csrf_token'] = secrets.token_hex(32)
+    return session['csrf_token']
+
+@app.route('/api/csrf-token', methods=['GET'])
+def get_csrf_token():
+    return jsonify({"csrf_token": _get_csrf_token()})
+
+def _validate_csrf():
+    token = request.headers.get('X-CSRFToken') or (request.json or {}).get('csrf_token')
+    expected = session.get('csrf_token')
+    if not token or not expected or token != expected:
+        return False
+    return True
+
+def csrf_protect(f):
+    def wrapper(*args, **kwargs):
+        if request.method in ('POST', 'PUT', 'DELETE', 'PATCH'):
+            if not _validate_csrf():
+                return jsonify({"error": "CSRF token missing or invalid"}), 403
+        return f(*args, **kwargs)
+    wrapper.__name__ = f.__name__
+    return wrapper
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -196,7 +228,7 @@ def run_command(cmd, shell=False):
     - DEBUG mode: Full error details returned to client
     - Production: Generic errors only, details in logs
     """
-    if os.geteuid() == 0 and isinstance(cmd, list) and len(cmd) > 0 and cmd[0] == "sudo":
+    if hasattr(os, 'geteuid') and os.geteuid() == 0 and isinstance(cmd, list) and len(cmd) > 0 and cmd[0] == "sudo":
         cmd = cmd[1:]
 
     try:
@@ -488,6 +520,7 @@ def get_devices():
 
 
 @app.route('/api/device-detail', methods=['GET'])
+@limiter.limit("20 per minute")
 def get_device_detail():
     """
     Run 'sudo lsusb -v -d VID:PID' to fetch verbose USB device details.
@@ -535,6 +568,8 @@ def get_device_detail():
 
 
 @app.route('/api/verify-fingerprint', methods=['POST'])
+@limiter.limit("10 per minute")
+@csrf_protect
 def verify_fingerprint():
     """
     Verify a device's current fingerprint against a stored fingerprint.
@@ -730,6 +765,7 @@ def get_rules():
 
 @app.route('/api/approve', methods=['POST'])
 @limiter.limit("5 per minute")
+@csrf_protect
 def approve_device():
     """Approve a selected blocked device via sudo usb-approve.sh, with optional fingerprint."""
     data = request.json or {}
@@ -738,8 +774,10 @@ def approve_device():
     ttl = data.get("ttl", "3600")
     fingerprint = data.get("fingerprint")
 
-    if not device_id:
-        return jsonify({"error": "Device ID is required"}), 400
+    if not device_id or not str(device_id).isdigit():
+        return jsonify({"error": "Invalid device ID"}), 400
+    if int(device_id) < 0 or int(device_id) > 99999:
+        return jsonify({"error": "Device ID out of range"}), 400
     if approval_type not in ["P", "T"]:
         return jsonify({"error": "Invalid approval type. Must be P or T."}), 400
 
@@ -768,8 +806,20 @@ def approve_device():
         }), 500
 
 
+ALLOWED_FP_KEYS = {'idVendor', 'idProduct', 'iManufacturer', 'iProduct',
+                   'iSerial', 'bcdUSB', 'bDeviceClass', 'interfaces'}
+
+def _sanitize_fingerprint(fp):
+    if not isinstance(fp, dict):
+        return None
+    return {k: v for k, v in fp.items() if k in ALLOWED_FP_KEYS}
+
+
 def _append_fingerprint_to_rule(device_id, fingerprint):
     """Append a fingerprint comment to the rule file atomically and safely."""
+    fingerprint = _sanitize_fingerprint(fingerprint)
+    if not fingerprint:
+        return False
     vendor = fingerprint.get('idVendor', '').replace('0x', '').strip()
     product = fingerprint.get('idProduct', '').replace('0x', '').strip()
     rule_vid_pid = f"{vendor}:{product}"
@@ -814,6 +864,7 @@ def _append_fingerprint_to_rule(device_id, fingerprint):
 
 @app.route('/api/block', methods=['POST'])
 @limiter.limit("5 per minute")
+@csrf_protect
 def block_device():
     """Block a device immediately and remove its rules file persistence."""
     data = request.json or {}
@@ -848,6 +899,7 @@ def block_device():
 
 @app.route('/api/change-status', methods=['POST'])
 @limiter.limit("5 per minute")
+@csrf_protect
 def change_status():
     """Change approval status (e.g. from permanent to temporary, or update TTL)."""
     data = request.json or {}

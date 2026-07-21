@@ -245,6 +245,7 @@ show_dashboard() {
     printf "  %-30s : %b\n" "TTL Reaper timer" "$(check_timer_status)"
     printf "  %-30s : %s\n" "Timer next run" "$(check_timer_next_run)"
     printf "  %-30s : %b\n" "IPC access" "$(check_ipc_access)"
+    printf "  %-30s : %s\n" "USB Lockdown" "$(usbguard get-parameter ImplicitPolicyTarget 2>/dev/null | tr -d '[:space:]' || echo 'unknown')"
     echo ""
 
     # ── Section 2: Rules Files ───────────────────────────────

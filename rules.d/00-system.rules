@@ -4,6 +4,20 @@ allow id 1d6b:0001 with-interface 09:00:00
 allow id 1d6b:0002 with-interface 09:00:00
 allow id 1d6b:0003 with-interface 09:00:00
 
+# ═══════════════════════════════════════════════════════════════════
+# Composite Device Reject (FIRST-MATCH - must stay at top)
+# ═══════════════════════════════════════════════════════════════════
+# USBGuard evaluates rules by first-match. These reject rules MUST
+# precede any allow rule so a BadUSB composite device (e.g. Rubber
+# Ducky = HID keyboard + Mass Storage, or HID + CDC modem) is denied
+# even if a later allow rule would otherwise match its VID:PID.
+# Source: USBGuard Protector v1.1 composite_reject_rules()
+reject with-interface { 03:01:01 08:06:50 }
+reject with-interface { 03:01:02 08:06:50 }
+reject with-interface { 03:00:00 08:06:50 }
+reject with-interface { 03:01:01 02:02:01 }
+reject with-interface { 03:01:02 02:02:01 }
+
 # Host keyboard/mouse devices (auto-detected by detect-host-input.sh)
 # These are added automatically during installation — do not remove this line:
 # === HOST INPUT START ===

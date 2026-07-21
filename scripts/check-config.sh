@@ -218,7 +218,7 @@ check_config_file() {
 
     # בדיקת נוכחות מתוך הזיכרון (Cache)
     for key in "${required_keys[@]}"; do
-        if [[ -n "${config_cache[$key]+ Iraq}" ]]; then # בדיקה אם המפתח קיים במערך
+        if [[ -n "${config_cache[$key]+x}" ]]; then
             check "Config key: $key" "pass" "${config_cache[$key]}"
         else
             check "Config key: $key" "warn" "Missing or empty"

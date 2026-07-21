@@ -22,4 +22,4 @@ ACTION=="add|change", \
   ENV{ID_BUS}=="usb", \
   ENV{ID_USB_DRIVER}=="usb-storage|uas", \
   ENV{UDISKS_IGNORE}="1", \
-  RUN+="/etc/usbguard/scripts/usb-mass-storage-handler.sh %k %E{DEVNAME}"
+  RUN+="/etc/usbguard/scripts/usb-mass-storage-handler.sh '%k' '%E{DEVNAME}' '$env{ID_VENDOR_ID}' '$env{ID_MODEL_ID}'"

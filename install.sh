@@ -227,6 +227,13 @@ preflight_checks() {
         fi
     fi
 
+    # 7. בדיקת venv – אם לא קיים, ניצור אותו מאוחר יותר בשלב 1
+    if [[ ! -d "/opt/usbguard-web/venv" ]]; then
+        log_warn "Web venv not found at /opt/usbguard-web/venv (will be created during installation)"
+    else
+        log_ok "Web venv exists at /opt/usbguard-web/venv"
+    fi
+
     return 0
 }
 
@@ -317,22 +324,34 @@ install_system_packages() {
         log_ok "Packages upgraded"
     fi
 
-    # התקנת python3-usbguard (ספרייה לתקשורת עם usbguard) – דרך apt או pip כגיבוי
-    log_info "Installing python3-usbguard..."
-    if apt-get install -y python3-usbguard 2>/dev/null; then
-        log_ok "python3-usbguard installed via apt"
+    # יצירת venv עבור ממשק ה-web (מניעת --break-system-packages)
+    # Venv נוצר לפני התקנת חבילות כדי שכל השלבים יוכלו להשתמש בו
+    if [[ ! -d "/opt/usbguard-web/venv" ]]; then
+        log_info "Creating Python venv for web interface at /opt/usbguard-web/venv..."
+        run_cmd python3 -m venv "/opt/usbguard-web/venv"
+        run_cmd /opt/usbguard-web/venv/bin/pip install --upgrade pip
+        log_ok "Web venv created at /opt/usbguard-web/venv"
     else
-        log_warn "python3-usbguard not in apt repos, trying pip..."
-        if pip3 install --break-system-packages usbguard 2>/dev/null; then
-            log_ok "python3-usbguard installed via pip"
-        else
-            log_warn "Could not install python3-usbguard. The web interface will fall back to subprocess."
-        fi
+        log_info "Web venv already exists at /opt/usbguard-web/venv"
     fi
 
-    # התקנת Flask-Limiter (להגבלת קצב בקשות ב-web)
-    log_info "Installing Python web dependencies..."
-    pip3 install --break-system-packages flask-limiter 2>/dev/null || log_warn "flask-limiter not installed (rate limiting disabled)"
+    # התקנת תלויות ה-Web הבסיסיות לתוך ה-VENV
+    log_info "Installing core Python web dependencies into venv..."
+    run_cmd /opt/usbguard-web/venv/bin/pip install flask flask-limiter 2>/dev/null || \
+        log_warn "Some web dependencies (flask/flask-limiter) failed to install in venv"
+
+    # התקנת python3-usbguard (ספרייה לתקשורת עם usbguard) – דרך apt או venv כגיבוי
+    log_info "Installing python3-usbguard..."
+    if apt-get install -y python3-usbguard 2>/dev/null; then
+        log_ok "python3-usbguard installed globally via apt"
+    else
+        log_warn "python3-usbguard not found in apt repos, trying pip inside venv..."
+        if /opt/usbguard-web/venv/bin/pip install usbguard 2>/dev/null; then
+            log_ok "python3-usbguard installed via pip in venv"
+        else
+            log_warn "Could not install python3-usbguard library. The web interface will fall back to subprocess mode."
+        fi
+    fi
 
     # סנכרון שעון (עוזר לתזמונים של TTL)
     ntpdate ntp.ubuntu.com 2>/dev/null || log_warn "Time sync skipped (NTP unavailable)"
@@ -473,6 +492,9 @@ deploy_files() {
         badusb-monitor.py       # ניטור התנהגותי להתקפות BadUSB
         usbguard-status.sh      # הצגת סטטוס התקנים מחוברים
         check-config.sh         # בדיקת תקינות תצורה
+        usb-lockdown.sh         # USB lockdown controller
+        usb-learn.sh            # Learning mode (propose-only)
+        usb-mass-storage-handler.sh  # udev mass storage handler
     )
 
     for script in "${main_scripts[@]}"; do
@@ -647,13 +669,28 @@ EOF
 
     # 7.2 Sudoers: מתן הרשאה לקבוצת usbadmins להריץ סקריפטים מסוימים ללא סיסמה
     local sudoers_file="/etc/sudoers.d/usbguard-approval"
-    local mass_storage_alias=""
-    local mass_storage_alias_line=""
-    if [[ -f "/etc/usbguard/scripts/usb-mass-storage-handler.sh" ]]; then
-        mass_storage_alias=" USBGUARD_MASS_STORAGE"
-        mass_storage_alias_line="Cmnd_Alias USBGUARD_MASS_STORAGE=/etc/usbguard/scripts/usb-mass-storage-handler.sh
-"
+    local handler_path="/etc/usbguard/scripts/usb-mass-storage-handler.sh"
+    
+    # טיפול בקובץ החסר: אם הוא לא קיים במקור, ניצור stub בטוח בנתיב היעד
+    if [[ ! -f "$SCRIPT_DIR/scripts/usb-mass-storage-handler.sh" ]]; then
+        log_warn "usb-mass-storage-handler.sh not found in source. Creating safe stub at ${handler_path}..."
+        run_cmd tee "$handler_path" > /dev/null << 'EOF'
+#!/usr/bin/env bash
+# Minimal stub for missing mass storage handler
+echo "$(date) - Mass storage handler triggered but not implemented yet" >> /var/log/usbguard-approval.log
+exit 0
+EOF
+        run_cmd chmod 755 "$handler_path"
+        run_cmd chown root:root "$handler_path"
+    else
+        run_cmd cp "$SCRIPT_DIR/scripts/usb-mass-storage-handler.sh" "$handler_path"
+        run_cmd chmod 755 "$handler_path"
+        run_cmd chown root:root "$handler_path"
     fi
+
+    local mass_storage_alias=" USBGUARD_MASS_STORAGE"
+    local mass_storage_alias_line="Cmnd_Alias USBGUARD_MASS_STORAGE=${handler_path}
+"
 
     run_cmd tee "$sudoers_file" > /dev/null << EOF
 # USBGuard Approval Manager - Sudoers Authorization

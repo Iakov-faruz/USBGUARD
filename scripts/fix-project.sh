@@ -129,19 +129,32 @@ fix_local_rules() {
     require_file "${rules_dir}/50-permanent.rules"
     require_file "${rules_dir}/90-temporary.rules"
 
-    cat > "${rules_dir}/00-system.rules" <<'EOF'
-# USBGuard System Rules – Valid syntax for v1.1.2
-# Allows USB controllers, tablet devices, and HID interfaces to prevent lockout.
+    if [[ ! -s "${rules_dir}/00-system.rules" ]]; then
+        cat > "${rules_dir}/00-system.rules" <<'EOF'
+# USBGuard System Rules – Secure default with BadUSB mitigation
+# Composite Rejects first, then infrastructure, then generic HID fallbacks.
+
+reject id *:* with-interface { 03:*:* 08:*:* }
+reject id *:* with-interface { 03:*:* 02:*:* }
 
 allow id 1d6b:0001 with-interface 09:00:00
 allow id 1d6b:0002 with-interface 09:00:00
 allow id 1d6b:0003 with-interface 09:00:00
 allow id 80ee:0021
+
 allow id *:* with-interface 03:00:00
 allow id *:* with-interface 03:01:00
 allow id *:* with-interface 03:01:01
 allow id *:* with-interface 03:01:02
 EOF
+        log_ok "Created secure default 00-system.rules with Composite Rejects"
+    else
+        if grep -q "^reject id" "${rules_dir}/00-system.rules"; then
+            log_ok "Preserving existing 00-system.rules (Composite Rejects verified)"
+        else
+            log_warn "00-system.rules exists but lacks Composite Rejects. Inspect it manually before deployment."
+        fi
+    fi
 
     : > "${rules_dir}/50-permanent.rules"
     : > "${rules_dir}/90-temporary.rules"
@@ -151,7 +164,9 @@ EOF
 run_targeted_tests() {
     log_info "Running targeted unit tests"
     local python_bin="${PROJECT_ROOT}/web/venv/bin/python3"
-
+    if [[ ! -x "$python_bin ]]; then
+        python_bin="/opt/usbguard-web/venv/bin/python3"
+    fi
     if [[ ! -x "$python_bin" ]]; then
         python_bin="$(command -v python3)"
     fi

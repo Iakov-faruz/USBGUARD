@@ -172,9 +172,36 @@ run_tests.sh בודק:
 ```bash
 sudo /etc/usbguard/scripts/usb-approve.sh        # TUI לאישור התקנים
 sudo /etc/usbguard/scripts/usbguard-status.sh     # מצב המערכת
+sudo /etc/usbguard/scripts/usb-lockdown.sh enable # נעילת USB (התקן חדש => block)
+sudo /etc/usbguard/scripts/usb-lockdown.sh status # סטטוס נעילה
+sudo /etc/usbguard/scripts/usb-learn.sh --duration 30   # מצב למידה (propose-only)
 sudo /etc/usbguard/scripts/import-rules.sh --file rules.json
 sudo /etc/usbguard/scripts/export-rules.sh
 ```
+
+### הגנה מפני BadUSB קומפוזיט
+
+`rules.d/00-system.rules` כולל כללי `reject` (first-match) להתקני HID משולבים:
+- `reject with-interface { 03:01:01 08:06:50 }` — HID keyboard + Mass Storage
+- `reject with-interface { 03:01:02 08:06:50 }` — HID mouse + Mass Storage
+- `reject with-interface { 03:00:00 08:06:50 }` — HID generic + Mass Storage
+- `reject with-interface { 03:01:01 02:02:01 }` — HID keyboard + CDC (modem)
+- `reject with-interface { 03:01:02 02:02:01 }` — HID mouse + CDC
+
+הכללים חייבים להישאר בראש הקובץ (usbguard הוא first-match).
+
+### מצב Lockdown (USB)
+
+`usb-lockdown.sh` שולט בפרמטר `ImplicitPolicyTarget` של usbguard:
+- `enable`  — מגדיר `block` (כל התקן חדש נחסם כברירת מחדל, fail-closed). שומר את הערך הקודם.
+- `disable` — משחרר את הנעילה אך משאיר `block` כברירת מחדל בטוחה.
+- `status`  — מציג את הערך הנוכחי ומצב fail-closed.
+
+### מצב למידה (Propose-Only)
+
+`usb-learn.sh` סורק התקנים למשך חלון זמן ומדפיס המלצות **ללא אישור אוטומטי**:
+- `APPEARED_DURING_LEARNING` → `REVIEW_PHYSICAL_VERIFICATION`
+- `COMPOSITE_UNEXPECTED` (HID+MS / HID+CDC) → `DO_NOT_APPROVE`
 
 ### לוגים
 
@@ -219,6 +246,8 @@ USBGUARD2/
 │   ├── import-rules.sh
 │   ├── restore-rules.sh
 │   ├── usb-approve.sh
+│   ├── usb-lockdown.sh
+│   ├── usb-learn.sh
 │   └── usbguard-status.sh
 ├── sudoers/
 │   └── usbguard-approval

@@ -26,7 +26,7 @@ readonly CONFIG_READER_DEFAULT_CONF="/etc/usbguard/approval-manager.conf"
 
 # רשימת תווים אסורים בהחלט בערכי קונפיגורציה (מניעת Shell Injection)
 # כולל: $, `, |, &, <, >, (, ), {, }, [, ], !, ;
-readonly _CONF_FORBIDDEN_CHARS='$`|&<>(){}[]!;'
+readonly _CONF_FORBIDDEN_CHARS='$`|&<>(){}[]!;\'
 
 # ───────────────────────────────────────────────────────────────────────
 # פונקציית עזר: _trim
@@ -47,7 +47,7 @@ _conf_contains_forbidden_char() {
     for ((i = 0; i < ${#value}; i++)); do
         ch="${value:i:1}"
         case "$ch" in
-            '$'|'`'|'|'|'&'|'<'|'>'|'('|')'|'{'|'}'|'['|']'|'!'|';')
+            '$'|'`'|'|'|'&'|'<'|'>'|'('|')'|'{'|'}'|'['|']'|'!'|';'|'\')
                 return 0
                 ;;
         esac

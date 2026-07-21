@@ -17,6 +17,7 @@
 # ═══════════════════════════════════════════════════════════════════════════════
 
 import evdev
+import re
 import select
 import time
 import json
@@ -132,8 +133,6 @@ def extract_vidpid_from_device(device):
             if os.path.exists(modalias_path):
                 with open(modalias_path, 'r') as f:
                     modalias = f.read().strip()
-                # Parse modalias: usb:v1234p5678d...
-                import re
                 match = re.search(r'v([0-9a-fA-F]{4})p([0-9a-fA-F]{4})', modalias)
                 if match:
                     return f"{match.group(1).lower()}:{match.group(2).lower()}"

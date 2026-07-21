@@ -123,7 +123,16 @@ stage_write_rules() {
 # STAGE 9: Syntax Verification
 # ═══════════════════════════════════════════════════════════════
 stage_verify_syntax() {
-    return 0
+    echo -e "${COLOR_CYAN}[9/12] Verifying rules syntax...${COLOR_RESET}"
+    local rules_dir
+    rules_dir=$(dirname "$RULES_PERMANENT")
+    if validate_rules_dir "$rules_dir"; then
+        echo -e "${COLOR_GREEN}  ✓ Syntax valid${COLOR_RESET}"
+        return 0
+    else
+        echo -e "${COLOR_RED}  ✗ Syntax validation failed${COLOR_RESET}"
+        return 1
+    fi
 }
 
 # ═══════════════════════════════════════════════════════════════

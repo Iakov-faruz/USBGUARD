@@ -55,7 +55,7 @@ _awk_ttl_filter() {
     BEGIN { state = 0; buffer = ""; expired_count = 0; }
     {
         if (state == 0) {
-            if ($0 ~ /^[[:space:]]*allow/) { buffer = $0; state = 1 } else { print $0 }
+            if ($0 ~ /^[[:space:]]*(allow|block|reject)/) { buffer = $0; state = 1 } else { print $0 }
         } else if (state == 1) {
             if ($0 ~ /^[[:space:]]*# ttl_epoch:[[:space:]]*[0-9]+/) {
                 buffer = buffer ORS $0
@@ -65,15 +65,15 @@ _awk_ttl_filter() {
                 epoch = int(comment_line)
                 if (epoch <= now) { expired_count++ } else { print buffer }
                 state = 0; buffer = ""
-            } else if ($0 ~ /^[[:space:]]*allow/) {
+            } else if ($0 ~ /^[[:space:]]*(allow|block|reject)/) {
                 expired_count++
-                print "WARN: Discarded orphaned allow rule: " buffer > "/dev/stderr"
+                print "WARN: Discarded orphaned rule: " buffer > "/dev/stderr"
                 buffer = $0; state = 1
             } else if ($0 ~ /^[[:space:]]*$/ || $0 ~ /^[[:space:]]*#/) {
                 buffer = buffer ORS $0
             } else {
                 expired_count++
-                print "WARN: Discarded orphaned allow rule (unexpected): " buffer > "/dev/stderr"
+                print "WARN: Discarded orphaned rule (unexpected): " buffer > "/dev/stderr"
                 buffer = ""; print $0; state = 0
             }
         }
@@ -81,7 +81,7 @@ _awk_ttl_filter() {
     END {
         if (state == 1 && length(buffer) > 0) {
             expired_count++
-            print "WARN: Discarded trailing orphaned allow rule: " buffer > "/dev/stderr"
+            print "WARN: Discarded trailing orphaned rule: " buffer > "/dev/stderr"
         }
         print "EXPIRED_COUNT=" expired_count > "/dev/stderr"
     }' "$temp_rules_file"
