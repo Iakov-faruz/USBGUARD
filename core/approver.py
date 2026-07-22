@@ -153,33 +153,46 @@ class Approver:
     def remove_rules_for_device(self, device: DeviceRecord, targets: List[str]) -> int:
         """מסירה חוקים קיימים של ההתקן מ-USBGuard לפי סוג Target (למשל allow/reject)."""
         removed = 0
-        try:
-            rules = self.client.list_rules()
-        except UsbguardError as e:
-            self.audit.log("list_rules_failed", error=str(e))
-            return 0
+        max_iterations = 50
+        iteration = 0
+        while iteration < max_iterations:
+            iteration += 1
+            try:
+                rules = self.client.list_rules()
+            except UsbguardError as e:
+                self.audit.log("list_rules_failed", error=str(e))
+                return removed
 
-        for rule in rules:
-            if rule.observed_target not in targets:
-                continue
-            if not self._rule_matches(rule, device):
-                continue
-            if rule.observed_rule_id is None:
-                continue
+            match = None
+            for rule in rules:
+                if rule.observed_target not in targets:
+                    continue
+                if not self._rule_matches(rule, device):
+                    continue
+                if rule.observed_rule_id is None:
+                    continue
+                match = rule
+                break
+
+            if not match:
+                return removed
 
             try:
-                self.client.remove_rule(rule.observed_rule_id)
+                self.client.remove_rule(match.observed_rule_id)
                 removed += 1
-                self.audit.log("rule_removed", rule_id=rule.observed_rule_id, target=rule.observed_target, fingerprint=device.fingerprint)
+                self.audit.log("rule_removed", rule_id=match.observed_rule_id, target=match.observed_target, fingerprint=device.fingerprint)
             except UsbguardError as e:
-                self.audit.log("rule_remove_failed", rule_id=rule.observed_rule_id, error=str(e))
-
+                self.audit.log("rule_remove_failed", rule_id=match.observed_rule_id, error=str(e))
+                return removed
         return removed
 
     def approve(self, fingerprint: str, permanent: bool = False, ttl: int = 300, actor: str = "cli", port_bind: bool = False) -> DeviceRecord:
         """
         מאשרת התקן לשימוש במערכת (אישור קבוע או זמני עם TTL).
         מזריקה חוק Allow ל-USBGuard ומעדכנת את מסד הנתונים.
+        
+        הערה: מוסיפים את החוק החדש FIRST, ורק אז מוחקים ישנים.
+        זה מונע fail-open — אם append_rule נכשל, ההתקן עדיין תחת החוק הישן.
         """
         if self.lockdown_enabled:
             raise RuntimeError("Lockdown is enabled. Approve is blocked.")
@@ -192,16 +205,18 @@ class Approver:
             self.audit.log("approve_rejected", actor=actor, fingerprint=device.fingerprint, errors=errors)
             raise RuntimeError(f"Approval rejected: {', '.join(errors)}")
 
-        # ניקוי חוקים קודמים של ההתקן
-        self.remove_rules_for_device(device, ["allow", "reject"])
-
-        # יצירת חוק Allow והזרקתו ל-USBGuard
+        # יצירת חוק Allow — קודם בונים, אחר כך מוסיפים
         rule_device = copy.deepcopy(device)
         if not port_bind:
             rule_device.via_port = ""  # אם לא הוגדר Port Binding, נבטל הצמדה לפורט ספציפי
             
         rule = render_allow(rule_device)
+
+        # הזרקת החוק FIRST — לפני מחיקת הישנים (atomic add-before-remove)
         self.client.append_rule(rule)
+
+        # ניקוי חוקים קודמים של ההתקן (אחרי שה-allow החדש כבר פעיל)
+        self.remove_rules_for_device(device, ["allow", "reject"])
 
         # עדכון מצב ההתקן במסד הנתונים
         device.state = "approved-permanent" if permanent else "approved-temporary"
@@ -216,7 +231,7 @@ class Approver:
         self.audit.log("device_approved", actor=actor, fingerprint=device.fingerprint, permanent=permanent, ttl=ttl, port_bind=port_bind, rule=rule)
 
         return device
-
+       
     def deny(self, fingerprint: str, actor: str = "cli", reason: str = "") -> DeviceRecord:
         """חוסמת התקן (מסירה חוקי Allow קיימים ומעדכנת את המצב ל-Denied)."""
         device = self._require_device(fingerprint)
@@ -276,14 +291,16 @@ class Approver:
         self.store.meta_set("lockdown", False)
         self.audit.log("lockdown_disabled", actor=actor, prev_policy=prev)
 
-    def init_policy(self) -> int:
+    def init_policy(self, force_rebuild: bool = False) -> int:
         """
         מאתחלת את קובץ החוקים של USBGuard: 
         מזריקה את חוקי ה-Composite Reject (הגנה מ-BadUSB) בראש הקובץ (First Match),
         ולאחר מכן מחזירה את חוקי ה-Allow הקיימים.
         
-        הערה: פעולה זו אינה אטומית לחלוטין (USBGuard לא תומך ב-transaction),
-        אך אנו מבצעים גיבוי של החוקים הקיימים לפני המחיקה ומנסים לשחזר במקרה כשל.
+        אם force_rebuild=True, מוחקת את כל החוקים הקיימים ובונה מחדש.
+        אם force_rebuild=False, ויש חוקי allow קיימים, מחזירה RuntimeError.
+        
+        אבטחה: מגדירים ImplicitPolicyTarget=block לפני המחיקה כדי למנוע fail-open.
         """
         try:
             existing_rules = self.client.list_rules()
@@ -294,19 +311,34 @@ class Approver:
         existing_allows = [r for r in existing_rules if r.observed_target == "allow"]
         existing_rejects = [r for r in existing_rules if r.observed_target == "reject"]
         
+        if not force_rebuild and existing_allows:
+            raise RuntimeError(
+                "Existing allow rules found. Composite rejects must be first. "
+                "Run: protector rebuild-policy --force"
+            )
+        
         # גיבוי כל החוקים לפי סדר - למקרה שנסתנכרן בחזרה
         # שומרים את החוקים לפי סדר-hash למניעת מצבי Race Condition
         rule_backup = [(r.raw_spec, r.observed_target) for r in existing_rules if r.raw_spec]
 
+        # אבטחה: לפני כל מחיקה, מוודאים ש-ImplicitPolicyTarget=block
+        # זה מונע fail-open אם התהליך קורס בין המחיקה להוספה
+        prev_implicit = self.client.get_parameter("ImplicitPolicyTarget")
+        if prev_implicit != "block":
+            try:
+                self.client.set_parameter("ImplicitPolicyTarget", "block")
+                self.audit.log("init_policy_set_implicit_block", prev=prev_implicit)
+            except UsbguardError as e:
+                self.audit.log("init_policy_set_implicit_failed", error=str(e))
+
         # מחיקת כל החוקים הקיימים כדי לבנות את הסדר מחדש
-        remove_success = True
         for r in sorted(existing_rules, key=lambda x: x.observed_rule_id or 0, reverse=True):
             if r.observed_rule_id is None:
                 continue
             try:
                 self.client.remove_rule(r.observed_rule_id)
             except Exception:
-                remove_success = False
+                pass
 
         added = 0
         try:
@@ -404,9 +436,11 @@ class Approver:
 
     def _rule_matches(self, rule: DeviceRecord, device: DeviceRecord) -> bool:
         """בודקת התאמה בין חוק קיים ב-USBGuard לבין אובייקט התקן במערכת."""
-        if rule.hash and device.hash and rule.hash == device.hash:
-            return True
-
+        # אם ל-rule יש hash — חייב התאמה מדויקת, אין fallback ל-vid_pid
+        if rule.hash:
+            return bool(device.hash and rule.hash == device.hash)
+        
+        # ללא hash — התאמה לפי vid_pid + serial + interfaces
         if rule.vid_pid and device.vid_pid and rule.vid_pid == device.vid_pid:
             # בדיקת התאמת מספר סידורי
             if rule.serial and device.serial:

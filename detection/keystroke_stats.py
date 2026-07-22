@@ -27,10 +27,10 @@ class KeystrokeStats:
         burst_count = sum(1 for t in self.events if ts - t <= self.thresholds.burst_window_seconds)
         intervals = list(self.intervals)
         recent = intervals[-max(2,self.thresholds.min_events_for_decision):]
-        variance=9999.0
-        if len(recent)>=2: variance=statistics.pvariance(recent)
+        stddev_ms=9999.0
+        if len(recent)>=2: stddev_ms=statistics.pstdev(recent)
         eps = window_count / max(0.001, self.thresholds.window_seconds)
-        return {"window_count":float(window_count),"burst_count":float(burst_count),"eps":float(eps),"variance_ms":float(variance),"interval_samples":float(len(recent))}
+        return {"window_count":float(window_count),"burst_count":float(burst_count),"eps":float(eps),"stddev_ms":float(stddev_ms),"interval_samples":float(len(recent))}
     def should_trigger(self, ts: float) -> Tuple[bool, str, Dict[str, float]]:
         if ts - self.last_trigger < self.thresholds.cooldown_seconds: return False,"",{}
         m=self.metrics(ts)
@@ -38,7 +38,7 @@ class KeystrokeStats:
         reasons=[]
         if m["eps"] > self.thresholds.eps_threshold: reasons.append("HIGH_EPS")
         if m["burst_count"] >= self.thresholds.burst_chars: reasons.append("BURST")
-        if m["interval_samples"] >= self.thresholds.min_events_for_decision and m["variance_ms"] < self.thresholds.low_variance_ms:
+        if m["interval_samples"] >= self.thresholds.min_events_for_decision and m["stddev_ms"] < self.thresholds.low_variance_ms:
             reasons.append("LOW_VARIANCE")
         if not reasons: return False,"",m
         if "BURST" in reasons or "HIGH_EPS" in reasons:

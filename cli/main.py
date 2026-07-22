@@ -76,6 +76,15 @@ def cmd_init_policy(args, ctx):
     }, indent=2))
 
 
+def cmd_rebuild_policy(args, ctx):
+    added = ctx.approver.init_policy(force_rebuild=True)
+    print(json.dumps({
+        "status": "ok",
+        "rules_added": added,
+        "note": "policy rebuilt from scratch",
+    }, indent=2))
+
+
 def cmd_devices_list(args, ctx):
     devices = ctx.store.list_devices(state=getattr(args, "state", None))
     print_devices(devices, as_json=args.json)
@@ -153,6 +162,12 @@ def cmd_audit_tail(args, ctx):
 
 def cmd_daemon(args, ctx):
     ctx.audit.log("daemon_start", interval=args.interval)
+    try:
+        ctx.approver.init_policy(force_rebuild=False)
+    except RuntimeError:
+        ctx.audit.log("startup_policy_needs_rebuild", hint="Run: protector rebuild-policy --force")
+    except Exception as e:
+        ctx.audit.log("startup_policy_error", error=str(e))
     while True:
         try:
             ctx.approver.sync_devices()
@@ -582,6 +597,10 @@ def build_parser():
 
     p_init = sub.add_parser("init-policy", help="Add baseline composite reject rules at TOP")
     p_init.set_defaults(func=cmd_init_policy)
+
+    p_rebuild = sub.add_parser("rebuild-policy", help="Rebuild all rules: composite first, then allows")
+    p_rebuild.add_argument("--force", action="store_true", required=True, help="Confirm full rebuild")
+    p_rebuild.set_defaults(func=cmd_rebuild_policy)
 
     p_devices = sub.add_parser("devices", help="Device commands")
     devices_sub = p_devices.add_subparsers(dest="devices_command", required=True)

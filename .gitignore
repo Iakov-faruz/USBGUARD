@@ -88,3 +88,9 @@ coverage.xml
 # --- Git internal safety ---
 *.rej
 *.patch
+
+# --- Kilo internal state ---
+.kilo/
+
+# --- Debug artifacts ---
+debug_*.py

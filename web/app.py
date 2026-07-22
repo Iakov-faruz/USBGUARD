@@ -1,14 +1,7 @@
 #!/usr/bin/env python3
 # ═══════════════════════════════════════════════════════════════════════════════
 # USBGuard Approval Manager - Flask Backend (usbguard-python + subprocess)
-# Version: 3.0 (Optimized with usbguard-python IPC)
-# ═══════════════════════════════════════════════════════════════════════════════
-# שיפור ביצועים: שימוש ב-usbguard-python לפקודות list-devices.
-#   • get_devices() → bus.getDevices() (IPC Socket, <10ms)
-#   • get_status()  → systemctl (קריאה קלה, נשאר)
-#   • get_rules()   → usb-approve.sh --list-rules (File I/O, נשאר)
-#   • approve/block → usb-approve.sh (לוגיקת קבצים מורכבת, נשאר)
-#   • device-detail → lsusb -v (אין API חלופי, נשאר)
+# Version: 3.1 (Unified QA-hardened, thread-safe, config-driven)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 import os
@@ -19,11 +12,27 @@ import tempfile
 import logging
 import sys
 import secrets
+import hmac
+import threading
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any, Dict, List, Optional, Tuple
+
 from flask import Flask, render_template, jsonify, request, session
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 
-# ─── usbguard-python: נסיון טעינה עם Fallback ─────────────────────────────────
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'core'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'cli'))
+
+from core.config import Config
+from core.policy_store import PolicyStore
+from core.audit import AuditLogger
+from core.usbguard_client import USBGuardClient
+from core.approver import Approver
+from core.rules_renderer import render_allow, render_reject, composite_reject_rules
+
+# ─── usbguard-python: Load with Fallback ──────────────────────────────────────
 try:
     import usbguard
     from usbguard import DeviceManager, Rule
@@ -49,17 +58,16 @@ log_level = logging.DEBUG if DEBUG_MODE else logging.INFO
 logging.basicConfig(
     level=log_level,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler()
-    ]
+    handlers=[logging.StreamHandler()]
 )
 logger = logging.getLogger(__name__)
 
 
-def setup_file_logging(log_file='/var/log/usbguard-web.log'):
+def setup_file_logging(log_file: str = '/var/log/usbguard-web.log') -> bool:
     """Attach web log file when daemon has write permission."""
-    if any(isinstance(handler, logging.FileHandler) and getattr(handler, 'baseFilename', None) == log_file for handler in logger.handlers):
-        return True
+    for handler in logger.handlers:
+        if isinstance(handler, logging.FileHandler) and getattr(handler, 'baseFilename', None) == log_file:
+            return True
     try:
         file_handler = logging.FileHandler(log_file)
     except PermissionError:
@@ -86,33 +94,43 @@ else:
     )
     logger.info("✅ Production mode - Rate limiting ENABLED")
 
-# Paths and Configs
-LOG_FILE = "/var/log/usbguard-approval.log"
-RULES_DIR = "/etc/usbguard/rules.d"
-STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
+# Paths (overridden at runtime by config via get_core_context)
+LOG_FILE: str = "/var/log/usbguard-approval.log"
+RULES_DIR: str = "/etc/usbguard/rules.d"
+STATIC_DIR: str = os.path.join(os.path.dirname(__file__), "static")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# CSRF Protection
+# CSRF Protection (Double-Submit Cookie + Constant-Time Comparison)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def _get_csrf_token():
+def _get_csrf_token() -> str:
     if 'csrf_token' not in session:
         session['csrf_token'] = secrets.token_hex(32)
     return session['csrf_token']
 
-@app.route('/api/csrf-token', methods=['GET'])
-def get_csrf_token():
-    return jsonify({"csrf_token": _get_csrf_token()})
 
-def _validate_csrf():
-    token = request.headers.get('X-CSRFToken') or (request.json or {}).get('csrf_token')
+@app.after_request
+def _set_csrf_cookie(response):
+    """Set CSRF token cookie on every response for double-submit pattern."""
+    response.set_cookie('XSRF-TOKEN', _get_csrf_token(),
+                        httponly=False, samesite='Lax', secure=False)
+    return response
+
+
+def _validate_csrf() -> bool:
+    """Validate CSRF token using double-submit cookie + constant-time comparison."""
+    header_token = request.headers.get('X-CSRFToken') or (request.json or {}).get('csrf_token')
+    cookie_token = request.cookies.get('XSRF-TOKEN')
+    token = header_token or cookie_token
     expected = session.get('csrf_token')
-    if not token or not expected or token != expected:
+    if not token or not expected:
         return False
-    return True
+    return hmac.compare_digest(token, expected)
+
 
 def csrf_protect(f):
+    """Decorator: require valid CSRF token for state-changing methods."""
     def wrapper(*args, **kwargs):
         if request.method in ('POST', 'PUT', 'DELETE', 'PATCH'):
             if not _validate_csrf():
@@ -120,6 +138,52 @@ def csrf_protect(f):
         return f(*args, **kwargs)
     wrapper.__name__ = f.__name__
     return wrapper
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Core Context (Thread-Safe Singleton with Lock)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_core_ctx: Optional[SimpleNamespace] = None
+_core_ctx_lock = threading.Lock()
+
+
+def get_core_context() -> SimpleNamespace:
+    """Get or create core context singleton (thread-safe with double-checked locking)."""
+    global _core_ctx, LOG_FILE, RULES_DIR
+    if _core_ctx is None:
+        with _core_ctx_lock:
+            if _core_ctx is None:
+                config = Config.load()
+                config.ensure_dirs()
+                store = PolicyStore(
+                    path=config.policy_store_file,
+                    backup_dir=config.backup_dir,
+                    keep_backups=config.keep_backups,
+                    lock_path=config.lock_file,
+                )
+                audit = AuditLogger(config.audit_file)
+                client = USBGuardClient(config.usbguard_binary)
+                approver = Approver(config, store, client, audit)
+                # Use resolved config paths instead of hardcoded defaults
+                LOG_FILE = config.audit_file
+                RULES_DIR = str(Path(config.config_dir) / "rules.d")
+                _core_ctx = SimpleNamespace(
+                    config=config, store=store, audit=audit, client=client, approver=approver
+                )
+    return _core_ctx
+
+
+def find_device_by_numeric_id(client: USBGuardClient, device_id: int) -> Optional[Dict[str, Any]]:
+    """Find a DeviceRecord by its numeric usbguard device ID."""
+    try:
+        devices = client.list_devices()
+        for d in devices:
+            if d.observed_rule_id == device_id:
+                return d.to_dict()
+    except Exception:
+        pass
+    return None
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -135,8 +199,7 @@ def get_usbguard_bus():
         return None
     try:
         bus = DeviceManager()
-        # Probe once to verify connection
-        bus.getDevices()
+        bus.getDevices()  # Probe once to verify connection
         return bus
     except Exception as e:
         logger.warning(f"usbguard-python IPC connection failed: {e}")
@@ -146,23 +209,16 @@ def get_usbguard_bus():
 def parse_device_from_ipc(device):
     """
     Convert a usbguard.Device object to a dictionary matching the API format.
-    Fields: device_id, status, id (VID:PID), serial, name, port, hash, etc.
     """
     try:
-        # Extract device ID from the Device object (integer)
         dev_id = str(device.getID()) if hasattr(device, 'getID') else str(device.id)
-        
-        # Extract target status
+
         try:
             target = device.getTarget()
-            if hasattr(target, 'name'):
-                status = target.name.lower()
-            else:
-                status = str(target).lower()
+            status = target.name.lower() if hasattr(target, 'name') else str(target).lower()
         except Exception:
             status = "unknown"
-        
-        # Extract VID:PID from rule or device attributes
+
         vid_pid = ""
         try:
             rule = device.getRule()
@@ -170,8 +226,7 @@ def parse_device_from_ipc(device):
                 vid_pid = f"{rule.getVendorID() or '0000'}:{rule.getProductID() or '0000'}"
         except Exception:
             pass
-        
-        # Extract name and serial from device attributes
+
         name = "Unknown Device"
         serial = "N/A"
         try:
@@ -181,8 +236,7 @@ def parse_device_from_ipc(device):
                 serial = attrs.get('serial', serial) or serial
         except Exception:
             pass
-        
-        # Try to extract name/serial from the rule string as fallback
+
         rule_str = ""
         try:
             rule = device.getRule()
@@ -190,16 +244,15 @@ def parse_device_from_ipc(device):
                 rule_str = str(rule)
         except Exception:
             pass
-        
+
         if rule_str:
-            name_match = re.search(r'name "([^"]*)"', rule_str)
-            if name_match:
-                name = name_match.group(1).strip()
-            serial_match = re.search(r'serial "([^"]*)"', rule_str)
-            if serial_match:
-                serial = serial_match.group(1)
-        
-        # Build return dictionary matching the subprocess format
+            m = re.search(r'name "([^"]*)"', rule_str)
+            if m:
+                name = m.group(1).strip()
+            m = re.search(r'serial "([^"]*)"', rule_str)
+            if m:
+                serial = m.group(1)
+
         return {
             "device_id": dev_id,
             "status": status,
@@ -222,46 +275,47 @@ def parse_device_from_ipc(device):
 # Subprocess Fallback (Legacy)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def run_command(cmd, shell=False):
+def run_command(cmd: list, shell: bool = False) -> Tuple[str, str, int]:
     """
     Execute system commands with intelligent error reporting.
-    - DEBUG mode: Full error details returned to client
-    - Production: Generic errors only, details in logs
+    - If running as root, sudo is stripped since it's redundant.
+    - DEBUG mode: Full error details returned to client.
+    - Production: Generic errors only, details in logs.
     """
-    if hasattr(os, 'geteuid') and os.geteuid() == 0 and isinstance(cmd, list) and len(cmd) > 0 and cmd[0] == "sudo":
-        cmd = cmd[1:]
+    if isinstance(cmd, list) and cmd and cmd[0] == "sudo":
+        if hasattr(os, 'geteuid') and os.geteuid() == 0:
+            cmd = cmd[1:]
+        else:
+            logger.warning(f"Command requested sudo but not running as root: {' '.join(cmd)}")
 
     try:
-        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, shell=shell, timeout=15)
-        
+        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                             text=True, shell=shell, timeout=15)
+
         if res.returncode != 0 and res.stderr:
             logger.error(f"Command failed: {' '.join(cmd) if isinstance(cmd, list) else cmd} | Error: {res.stderr.strip()}")
         elif res.returncode == 0 and res.stdout and DEBUG_MODE:
             logger.debug(f"Command succeeded: {' '.join(cmd) if isinstance(cmd, list) else cmd}")
-        
+
         if res.returncode != 0:
             if DEBUG_MODE:
                 return res.stdout, res.stderr, res.returncode
-            else:
-                return res.stdout, "Operation failed. Check server logs for details.", res.returncode
-        else:
-            return res.stdout, "", res.returncode
-        
+            return res.stdout, "Operation failed. Check server logs for details.", res.returncode
+        return res.stdout, "", res.returncode
+
     except subprocess.TimeoutExpired:
         logger.error(f"Command timed out: {' '.join(cmd) if isinstance(cmd, list) else cmd}")
-        if DEBUG_MODE:
-            return "", "Command timed out", -1
-        return "", "Operation timed out", -1
+        err_msg = "Command timed out" if DEBUG_MODE else "Operation timed out"
+        return "", err_msg, -1
     except Exception as e:
         logger.exception(f"Unexpected error running command: {' '.join(cmd) if isinstance(cmd, list) else cmd}")
-        if DEBUG_MODE:
-            return "", str(e), -1
-        return "", "Internal server error", -1
+        err_msg = str(e) if DEBUG_MODE else "Internal server error"
+        return "", err_msg, -1
 
 
-def parse_lsusb_verbose(output):
-    """Parse 'sudo lsusb -v -d VID:PID' output into structured JSON."""
-    result = {
+def parse_lsusb_verbose(output: str) -> Dict[str, Any]:
+    """Parse 'lsusb -v -d VID:PID' output into structured JSON."""
+    result: Dict[str, Any] = {
         "device": {},
         "configuration": None,
         "interfaces": [],
@@ -269,21 +323,21 @@ def parse_lsusb_verbose(output):
         "status": "",
         "raw": output
     }
-    
+
     if not output.strip():
         return result
-    
+
     lines = output.split('\n')
-    current_section = None
-    current_interface = None
-    current_endpoint = None
+    current_section: Optional[str] = None
+    current_interface: Optional[Dict] = None
+    current_endpoint: Optional[Dict] = None
     interface_count = -1
     endpoint_count = -1
-    
+
     for line in lines:
         stripped = line.strip()
         lower = stripped.lower()
-        
+
         if 'device descriptor:' in lower:
             current_section = 'device'
             continue
@@ -308,20 +362,20 @@ def parse_lsusb_verbose(output):
         elif 'device status:' in lower:
             current_section = 'status'
             if ':' in stripped:
-                status_val = stripped.split(':', 1)[1].strip()
-                result["status"] = status_val
+                result["status"] = stripped.split(':', 1)[1].strip()
             continue
         elif 'bus powered' in lower or 'self powered' in lower:
             if current_section == 'config':
-                result["configuration"] = result.get("configuration", {})
+                if result.get("configuration") is None:
+                    result["configuration"] = {}
                 result["configuration"]["power_type"] = stripped.strip('()')
             continue
-        
+
         if ':' in stripped and not stripped.startswith('('):
             key, _, val = stripped.partition(':')
             key = key.strip()
             val = val.strip()
-            
+
             if current_section == 'device':
                 result["device"][key] = val
             elif current_section == 'config':
@@ -332,26 +386,26 @@ def parse_lsusb_verbose(output):
                 current_interface["descriptors"][key] = val
             elif current_section == 'endpoint' and current_endpoint is not None:
                 current_endpoint["descriptors"][key] = val
-    
-    first_line = lines[0] if lines else ""
-    bus_match = re.search(r'Bus (\d+) Device (\d+): ID ([0-9a-fA-F]{4}:[0-9a-fA-F]{4})\s*(.*)', first_line)
-    if bus_match:
-        result["bus_info"] = {
-            "bus": bus_match.group(1),
-            "device": bus_match.group(2),
-            "id": bus_match.group(3),
-            "description": bus_match.group(4).strip()
-        }
-    
+
+    if lines:
+        m = re.search(r'Bus (\d+) Device (\d+): ID ([0-9a-fA-F]{4}:[0-9a-fA-F]{4})\s*(.*)', lines[0])
+        if m:
+            result["bus_info"] = {
+                "bus": m.group(1),
+                "device": m.group(2),
+                "id": m.group(3),
+                "description": m.group(4).strip()
+            }
+
     return result
 
 
-def get_fingerprint_from_lsusb(output):
+def get_fingerprint_from_lsusb(output: str) -> Dict[str, Any]:
     """Extract a stable fingerprint from lsusb -v output."""
     parsed = parse_lsusb_verbose(output)
     dev = parsed.get("device", {})
-    
-    fingerprint = {
+
+    fingerprint: Dict[str, Any] = {
         "idVendor": dev.get("idVendor", ""),
         "idProduct": dev.get("idProduct", ""),
         "iManufacturer": dev.get("iManufacturer", ""),
@@ -360,21 +414,18 @@ def get_fingerprint_from_lsusb(output):
         "bcdUSB": dev.get("bcdUSB", ""),
         "bDeviceClass": dev.get("bDeviceClass", "").split()[0] if dev.get("bDeviceClass") else "",
     }
-    
+
     if parsed.get("interfaces"):
         interface_classes = []
         for iface in parsed["interfaces"]:
             desc = iface.get("descriptors", {})
-            b_class = desc.get("bInterfaceClass", "").split()[0] if desc.get("bInterfaceClass") else ""
-            b_sub = desc.get("bInterfaceSubClass", "").split()[0] if desc.get("bInterfaceSubClass") else ""
-            b_proto = desc.get("bInterfaceProtocol", "").split()[0] if desc.get("bInterfaceProtocol") else ""
             interface_classes.append({
-                "class": b_class,
-                "subclass": b_sub,
-                "protocol": b_proto
+                "class": desc.get("bInterfaceClass", "").split()[0] if desc.get("bInterfaceClass") else "",
+                "subclass": desc.get("bInterfaceSubClass", "").split()[0] if desc.get("bInterfaceSubClass") else "",
+                "protocol": desc.get("bInterfaceProtocol", "").split()[0] if desc.get("bInterfaceProtocol") else "",
             })
         fingerprint["interfaces"] = interface_classes
-    
+
     return fingerprint
 
 
@@ -389,28 +440,17 @@ def index():
 
 @app.route('/api/status', methods=['GET'])
 def get_status():
-    """Retrieve Systemd service status for usbguard and the reaper timer."""
+    """Retrieve systemd service status for usbguard and the reaper timer."""
     _, _, rc_daemon = run_command(["systemctl", "is-active", "--quiet", "usbguard"])
-    daemon_active = (rc_daemon == 0)
-
     _, _, rc_timer = run_command(["systemctl", "is-active", "--quiet", "usbguard-ttl-reaper.timer"])
-    timer_active = (rc_timer == 0)
 
-    rules_count = 0
-    stdout, _, rc = run_command(["sudo", "/etc/usbguard/scripts/usb-approve.sh", "--list-rules"])
-    if rc == 0:
-        try:
-            data = json.loads(stdout)
-            for cat in ["system", "permanent", "temporary"]:
-                for line in data.get(cat, []):
-                    if line.strip().startswith('allow'):
-                        rules_count += 1
-        except Exception as e:
-            logger.error(f"Failed to parse rules count: {e}")
+    ctx = get_core_context()
+    devices = ctx.store.list_devices()
+    rules_count = len([d for d in devices if d.state in ("approved-permanent", "approved-temporary")])
 
     return jsonify({
-        "daemon_active": daemon_active,
-        "timer_active": timer_active,
+        "daemon_active": (rc_daemon == 0),
+        "timer_active": (rc_timer == 0),
         "active_rules_count": rules_count
     })
 
@@ -421,9 +461,9 @@ def get_devices():
     Retrieve list of USB devices via usbguard-python IPC (fast path)
     with automatic fallback to subprocess (legacy).
     """
-    devices = []
-    
-    # ── Fast Path: usbguard-python IPC ─────────────────────────────────
+    devices: List[Dict] = []
+
+    # Fast Path: usbguard-python IPC
     bus = get_usbguard_bus()
     if bus is not None:
         try:
@@ -432,134 +472,95 @@ def get_devices():
                 parsed = parse_device_from_ipc(device)
                 if parsed:
                     devices.append(parsed)
-            
             if devices:
                 logger.debug(f"IPC: Retrieved {len(devices)} device(s) via usbguard-python")
                 return jsonify(devices)
         except Exception as e:
             logger.warning(f"IPC device listing failed, falling back to subprocess: {e}")
-    
-    # ── Fallback: subprocess ───────────────────────────────────────────
+
+    # Fallback: subprocess
     stdout, stderr, rc = run_command(["usbguard", "list-devices"])
     if rc != 0:
         error_msg = stderr if DEBUG_MODE else "Failed to communicate with USBGuard daemon"
         logger.error(f"Failed to list devices: {stderr}")
         return jsonify({"error": error_msg}), 500
-    
+
     for line in stdout.strip().split('\n'):
         if not line:
             continue
-        
         parts = line.split(' ', 2)
         if len(parts) < 2:
             continue
-            
+
         dev_id = parts[0].replace(':', '')
         status = parts[1]
-        
-        vid_pid = ""
-        vid_pid_match = re.search(r'id ([0-9a-fA-F]{4}:[0-9a-fA-F]{4})', line)
-        if vid_pid_match:
-            vid_pid = vid_pid_match.group(1)
 
-        serial = "N/A"
-        serial_match = re.search(r'serial "([^"]*)"', line)
-        if serial_match:
-            serial = serial_match.group(1)
-
-        name = "Unknown Device"
-        name_match = re.search(r'name "([^"]*)"', line)
-        if name_match:
-            name = name_match.group(1).strip()
-
-        port = "N/A"
-        port_match = re.search(r'via-port (\S+)', line)
-        if port_match:
-            port = port_match.group(1)
-
-        dev_hash = "N/A"
-        hash_match = re.search(r'hash "([^"]*)"', line)
-        if hash_match:
-            dev_hash = hash_match.group(1)
-
-        parent_hash = "N/A"
-        phash_match = re.search(r'parent-hash "([^"]*)"', line)
-        if phash_match:
-            parent_hash = phash_match.group(1)
+        vid_pid = _extract_re(r'id ([0-9a-fA-F]{4}:[0-9a-fA-F]{4})', line, "")
+        serial = _extract_re(r'serial "([^"]*)"', line, "N/A")
+        name = _extract_re(r'name "([^"]*)"', line, "Unknown Device")
+        port = _extract_re(r'via-port (\S+)', line, "N/A")
+        dev_hash = _extract_re(r'hash "([^"]*)"', line, "N/A")
+        parent_hash = _extract_re(r'parent-hash "([^"]*)"', line, "N/A")
 
         interfaces = "N/A"
-        intf_match = re.search(r'with-interface \{([^}]+)\}', line)
-        if intf_match:
-            interfaces = intf_match.group(1).strip()
+        m = re.search(r'with-interface \{([^}]+)\}', line)
+        if m:
+            interfaces = m.group(1).strip()
         else:
-            intf_match_single = re.search(r'with-interface (\S+)', line)
-            if intf_match_single:
-                interfaces = intf_match_single.group(1)
+            m = re.search(r'with-interface (\S+)', line)
+            if m:
+                interfaces = m.group(1)
 
-        connect_type = "N/A"
-        conn_match = re.search(r'with-connect-type "([^"]*)"', line)
-        if conn_match:
-            connect_type = conn_match.group(1)
+        connect_type = _extract_re(r'with-connect-type "([^"]*)"', line, "N/A")
 
         devices.append({
-            "device_id": dev_id,
-            "status": status,
-            "id": vid_pid,
-            "serial": serial,
-            "name": name,
-            "port": port,
-            "hash": dev_hash,
-            "parent_hash": parent_hash,
-            "interfaces": interfaces,
-            "connect_type": connect_type,
-            "raw": line
+            "device_id": dev_id, "status": status, "id": vid_pid,
+            "serial": serial, "name": name, "port": port,
+            "hash": dev_hash, "parent_hash": parent_hash,
+            "interfaces": interfaces, "connect_type": connect_type, "raw": line
         })
 
     logger.debug(f"Subprocess: Retrieved {len(devices)} device(s)")
     return jsonify(devices)
 
 
+def _extract_re(pattern: str, text: str, default: str = "") -> str:
+    m = re.search(pattern, text)
+    return m.group(1) if m else default
+
+
 @app.route('/api/device-detail', methods=['GET'])
 @limiter.limit("20 per minute")
 def get_device_detail():
     """
-    Run 'sudo lsusb -v -d VID:PID' to fetch verbose USB device details.
+    Run 'lsusb -v -d VID:PID' to fetch verbose USB device details.
     Returns parsed JSON including manufacturer, serial, interface classes, etc.
     """
     vid_pid = request.args.get('id', '')
-    
+
     if not vid_pid:
         stdout, stderr, rc = run_command(["lsusb"])
         if rc != 0:
-            error_msg = stderr if DEBUG_MODE else "Failed to list USB devices"
-            logger.error(f"lsusb failed: {stderr}")
-            return jsonify({"error": error_msg}), 500
-        
+            return jsonify({"error": stderr if DEBUG_MODE else "Failed to list USB devices"}), 500
         devices_raw = []
         for line in stdout.strip().split('\n'):
-            if not line.strip():
-                continue
             m = re.search(r'ID\s+([0-9a-fA-F]{4}:[0-9a-fA-F]{4})\s+(.+)', line)
             if m:
                 devices_raw.append({"id": m.group(1), "desc": m.group(2).strip()})
-        
         return jsonify({"devices": devices_raw})
-    
+
     if not re.match(r'^[0-9a-fA-F]{4}:[0-9a-fA-F]{4}$', vid_pid):
         return jsonify({"error": "Invalid VID:PID format"}), 400
-    
-    stdout, stderr, rc = run_command(["sudo", "lsusb", "-v", "-d", vid_pid])
+
+    stdout, stderr, rc = run_command(["lsusb", "-v", "-d", vid_pid])
     if rc != 0:
         error_msg = stderr if DEBUG_MODE else "Failed to read device details"
         logger.error(f"lsusb -v failed for {vid_pid}: {stderr}")
-        return jsonify({
-            "error": error_msg,
-            "note": "Device may not be connected or needs sudo"
-        }), 500
-    
+        return jsonify({"error": error_msg, "note": "Device may not be connected"}), 500
+
     parsed = parse_lsusb_verbose(stdout)
     fingerprint = get_fingerprint_from_lsusb(stdout)
-    
+
     return jsonify({
         "vid_pid": vid_pid,
         "parsed": parsed,
@@ -577,31 +578,31 @@ def verify_fingerprint():
     """
     data = request.json or {}
     vid_pid = data.get("vid_pid", "")
-    
+
     if not vid_pid or not re.match(r'^[0-9a-fA-F]{4}:[0-9a-fA-F]{4}$', vid_pid):
         return jsonify({"error": "Invalid VID:PID"}), 400
-    
+
     stored_fp = data.get("stored_fingerprint", {})
-    
-    stdout, stderr, rc = run_command(["sudo", "lsusb", "-v", "-d", vid_pid])
+
+    stdout, stderr, rc = run_command(["lsusb", "-v", "-d", vid_pid])
     if rc != 0:
         error_msg = stderr if DEBUG_MODE else "Cannot read device. Is it still connected?"
         logger.error(f"Cannot read device for verification: {stderr}")
         return jsonify({"error": error_msg}), 500
-    
+
     current_fp = get_fingerprint_from_lsusb(stdout)
-    
+
     if not stored_fp:
         return jsonify({
             "has_stored": False,
             "current_fingerprint": current_fp,
             "message": "No stored fingerprint found. This device has not been fingerprinted yet."
         })
-    
+
     mismatches = []
     matches = 0
     total_fields = 0
-    
+
     scalar_fields = ["idVendor", "idProduct", "iManufacturer", "iProduct", "iSerial", "bcdUSB", "bDeviceClass"]
     for field in scalar_fields:
         stored_val = stored_fp.get(field, "")
@@ -617,10 +618,10 @@ def verify_fingerprint():
                     "current": current_val,
                     "severity": "high" if field in ["iSerial", "bDeviceClass"] else "medium"
                 })
-    
+
     stored_interfaces = stored_fp.get("interfaces", [])
     current_interfaces = current_fp.get("interfaces", [])
-    
+
     if stored_interfaces and current_interfaces:
         for i, (s_iface, c_iface) in enumerate(zip(stored_interfaces, current_interfaces)):
             for key in ["class", "subclass", "protocol"]:
@@ -637,9 +638,9 @@ def verify_fingerprint():
                             "current": c_val,
                             "severity": "critical" if key == "class" else "high"
                         })
-    
+
     match_pct = round((matches / total_fields * 100)) if total_fields > 0 else 0
-    
+
     return jsonify({
         "has_stored": True,
         "current_fingerprint": current_fp,
@@ -654,7 +655,7 @@ def verify_fingerprint():
     })
 
 
-def _get_verdict_message(match_pct, mismatches):
+def _get_verdict_message(match_pct: int, mismatches: List[Dict]) -> str:
     if match_pct >= 80 and len(mismatches) == 0:
         return "✅ Device identity confirmed. All fingerprints match."
     elif match_pct >= 80 and len(mismatches) > 0:
@@ -670,144 +671,86 @@ def _get_verdict_message(match_pct, mismatches):
 
 @app.route('/api/rules', methods=['GET'])
 def get_rules():
-    """Retrieve all parsed active rules from 00-system, 50-permanent, and 90-temporary."""
-    stdout, stderr, rc = run_command(["sudo", "/etc/usbguard/scripts/usb-approve.sh", "--list-rules"])
-    if rc != 0:
-        logger.error(f"Failed to get rules: {stderr}")
-        return jsonify([])
-
+    """Retrieve all parsed active rules from usbguard daemon."""
+    ctx = get_core_context()
     try:
-        data = json.loads(stdout)
+        rules = ctx.client.list_rules()
     except Exception as e:
-        logger.error(f"Failed to parse rules JSON: {e}")
+        logger.error(f"Failed to get rules: {e}")
         return jsonify([])
 
-    rules = []
-    
-    categories = {
-        "system": ("System", "00-system.rules"),
-        "permanent": ("Permanent", "50-permanent.rules"),
-        "temporary": ("Temporary", "90-temporary.rules")
-    }
+    result = []
+    for rule in rules:
+        if rule.observed_target not in ("allow", "block", "reject"):
+            continue
+        interfaces = " ".join(rule.interfaces) if rule.interfaces else "N/A"
+        result.append({
+            "rule": rule.raw_spec or "",
+            "filename": "active",
+            "category": "active",
+            "id": rule.vid_pid or "",
+            "name": rule.name or "Unknown Device",
+            "serial": rule.serial or "N/A",
+            "hash": rule.hash or "N/A",
+            "interfaces": interfaces,
+            "ttl_epoch": None,
+            "fingerprint": None
+        })
 
-    for cat_key, (category_name, filename) in categories.items():
-        lines = data.get(cat_key, [])
-        i = 0
-        while i < len(lines):
-            line = lines[i].strip()
-            if line.startswith('allow') or line.startswith('block'):
-                rule_text = line
-                ttl = None
-                fingerprint = None
-                
-                if cat_key == "temporary" and i + 1 < len(lines):
-                    next_line = lines[i+1].strip()
-                    if next_line.startswith("# ttl_epoch:"):
-                        ttl_val = next_line.replace("# ttl_epoch:", "").strip()
-                        if ttl_val.isdigit():
-                            ttl = int(ttl_val)
-                
-                for j in range(i + 1, min(i + 5, len(lines))):
-                    check_line = lines[j].strip()
-                    if check_line.startswith("# fingerprint:"):
-                        fp_str = check_line.replace("# fingerprint:", "").strip()
-                        try:
-                            fingerprint = json.loads(fp_str)
-                        except:
-                            pass
-                        break
-                
-                vid_pid = ""
-                vid_pid_match = re.search(r'id ([0-9a-fA-F]{4}:[0-9a-fA-F]{4})', rule_text)
-                if vid_pid_match:
-                    vid_pid = vid_pid_match.group(1)
-
-                name = "Unknown Device"
-                name_match = re.search(r'name "([^"]*)"', rule_text)
-                if name_match:
-                    name = name_match.group(1).strip()
-
-                serial = "N/A"
-                serial_match = re.search(r'serial "([^"]*)"', rule_text)
-                if serial_match:
-                    serial = serial_match.group(1)
-
-                dev_hash = "N/A"
-                hash_match = re.search(r'hash "([^"]*)"', rule_text)
-                if hash_match:
-                    dev_hash = hash_match.group(1)
-
-                interfaces = "N/A"
-                intf_match = re.search(r'with-interface \{([^}]+)\}', rule_text)
-                if intf_match:
-                    interfaces = intf_match.group(1)
-                else:
-                    intf_match_single = re.search(r'with-interface (\S+)', rule_text)
-                    if intf_match_single:
-                        interfaces = intf_match_single.group(1)
-
-                rules.append({
-                    "rule": rule_text,
-                    "filename": filename,
-                    "category": category_name,
-                    "id": vid_pid,
-                    "name": name,
-                    "serial": serial,
-                    "hash": dev_hash,
-                    "interfaces": interfaces,
-                    "ttl_epoch": ttl,
-                    "fingerprint": fingerprint
-                })
-            i += 1
-
-    return jsonify(rules)
+    return jsonify(result)
 
 
 @app.route('/api/approve', methods=['POST'])
 @limiter.limit("5 per minute")
 @csrf_protect
 def approve_device():
-    """Approve a selected blocked device via sudo usb-approve.sh, with optional fingerprint."""
+    """Approve a selected blocked device via core approver, with optional fingerprint."""
     data = request.json or {}
     device_id = data.get("device_id")
     approval_type = data.get("type", "T")
-    ttl = data.get("ttl", "3600")
-    fingerprint = data.get("fingerprint")
+    ttl = data.get("ttl", 3600)
 
     if not device_id or not str(device_id).isdigit():
         return jsonify({"error": "Invalid device ID"}), 400
-    if int(device_id) < 0 or int(device_id) > 99999:
+    device_id_int = int(device_id)
+    if device_id_int < 0 or device_id_int > 99999:
         return jsonify({"error": "Device ID out of range"}), 400
     if approval_type not in ["P", "T"]:
         return jsonify({"error": "Invalid approval type. Must be P or T."}), 400
 
-    cmd = ["sudo", "/etc/usbguard/scripts/usb-approve.sh", "--device", str(device_id), "--type", approval_type]
-    if approval_type == "T" and ttl:
-        cmd.extend(["--ttl", str(ttl)])
+    ctx = get_core_context()
+    try:
+        devices = ctx.client.list_devices()
+        target = None
+        for d in devices:
+            if d.observed_rule_id == device_id_int:
+                target = d
+                break
+        if not target:
+            return jsonify({"error": f"Device {device_id} not found in usbguard"}), 404
 
-    stdout, stderr, rc = run_command(cmd)
-
-    if rc == 0:
-        if fingerprint:
-            _append_fingerprint_to_rule(device_id, fingerprint)
-        
+        approved = ctx.approver.approve(
+            fingerprint=target.fingerprint,
+            permanent=(approval_type == "P"),
+            ttl=int(ttl),
+            actor="web",
+            port_bind=False,
+        )
         logger.info(f"Device {device_id} approved as {approval_type}")
         return jsonify({
             "success": True,
             "message": f"Successfully approved device {device_id} ({'Permanent' if approval_type == 'P' else 'Temporary'})",
-            "output": stdout if DEBUG_MODE else None
+            "output": approved.to_dict() if DEBUG_MODE else None
         })
-    else:
-        error_msg = stderr if DEBUG_MODE else "Failed to approve device. Check logs."
-        logger.error(f"Failed to approve device {device_id}: {stderr}")
-        return jsonify({
-            "success": False,
-            "error": error_msg
-        }), 500
+    except Exception as e:
+        error_msg = str(e) if DEBUG_MODE else "Failed to approve device. Check logs."
+        logger.error(f"Failed to approve device {device_id}: {e}")
+        return jsonify({"success": False, "error": error_msg}), 500
 
 
 ALLOWED_FP_KEYS = {'idVendor', 'idProduct', 'iManufacturer', 'iProduct',
                    'iSerial', 'bcdUSB', 'bDeviceClass', 'interfaces'}
+
 
 def _sanitize_fingerprint(fp):
     if not isinstance(fp, dict):
@@ -815,7 +758,7 @@ def _sanitize_fingerprint(fp):
     return {k: v for k, v in fp.items() if k in ALLOWED_FP_KEYS}
 
 
-def _append_fingerprint_to_rule(device_id, fingerprint):
+def _append_fingerprint_to_rule(device_id: str, fingerprint: dict) -> bool:
     """Append a fingerprint comment to the rule file atomically and safely."""
     fingerprint = _sanitize_fingerprint(fingerprint)
     if not fingerprint:
@@ -823,7 +766,7 @@ def _append_fingerprint_to_rule(device_id, fingerprint):
     vendor = fingerprint.get('idVendor', '').replace('0x', '').strip()
     product = fingerprint.get('idProduct', '').replace('0x', '').strip()
     rule_vid_pid = f"{vendor}:{product}"
-    
+
     for filename in sorted(os.listdir(RULES_DIR)):
         if not filename.endswith('.rules'):
             continue
@@ -831,7 +774,7 @@ def _append_fingerprint_to_rule(device_id, fingerprint):
         try:
             with open(filepath, 'r') as f:
                 lines = f.readlines()
-            
+
             modified = False
             for i, line in enumerate(lines):
                 if re.search(rf'\ballow\s+id\s+{re.escape(rule_vid_pid)}\b', line):
@@ -839,7 +782,7 @@ def _append_fingerprint_to_rule(device_id, fingerprint):
                     lines.insert(i + 1, fp_comment)
                     modified = True
                     break
-            
+
             if modified:
                 dir_name = os.path.dirname(filepath)
                 fd, tmp_path = tempfile.mkstemp(dir=dir_name, prefix='.tmp_rule_')
@@ -847,7 +790,10 @@ def _append_fingerprint_to_rule(device_id, fingerprint):
                     with os.fdopen(fd, 'w') as f:
                         f.writelines(lines)
                     os.chmod(tmp_path, 0o600)
-                    os.chown(tmp_path, 0, 0)
+                    try:
+                        os.chown(tmp_path, 0, 0)
+                    except (AttributeError, PermissionError, OSError):
+                        pass
                     os.replace(tmp_path, filepath)
                     logger.info(f"Added fingerprint to rule for {rule_vid_pid}")
                     return True
@@ -858,7 +804,7 @@ def _append_fingerprint_to_rule(device_id, fingerprint):
                     return False
         except Exception as e:
             logger.error(f"Failed to process {filename}: {e}")
-            pass
+
     return False
 
 
@@ -874,27 +820,29 @@ def block_device():
     if not device_id and not vid_pid:
         return jsonify({"error": "Device ID or VID:PID is required"}), 400
 
-    cmd = ["sudo", "/etc/usbguard/scripts/usb-approve.sh"]
-    if device_id:
-        cmd.extend(["--block", str(device_id)])
-    if vid_pid:
-        cmd.extend(["--vidpid", str(vid_pid)])
-
-    stdout, stderr, rc = run_command(cmd)
-
-    if rc == 0:
+    ctx = get_core_context()
+    try:
+        if device_id:
+            devices = ctx.client.list_devices()
+            target = None
+            for d in devices:
+                if d.observed_rule_id == int(device_id):
+                    target = d
+                    break
+            if not target:
+                return jsonify({"error": f"Device {device_id} not found"}), 404
+            ctx.approver.deny(target.fingerprint, actor="web", reason="blocked via web")
+        else:
+            ctx.approver.deny(vid_pid, actor="web", reason="blocked via web")
         logger.info(f"Blocked device: {vid_pid or device_id}")
         return jsonify({
             "success": True,
-            "message": f"Successfully blocked and removed persistence for {vid_pid or 'ID: ' + str(device_id)}"
+            "message": f"Successfully blocked device {vid_pid or 'ID: ' + str(device_id)}"
         })
-    else:
-        error_msg = stderr if DEBUG_MODE else "Failed to block device. Check logs."
-        logger.error(f"Failed to block device {vid_pid or device_id}: {stderr}")
-        return jsonify({
-            "success": False,
-            "error": error_msg
-        }), 500
+    except Exception as e:
+        error_msg = str(e) if DEBUG_MODE else "Failed to block device. Check logs."
+        logger.error(f"Failed to block device {vid_pid or device_id}: {e}")
+        return jsonify({"success": False, "error": error_msg}), 500
 
 
 @app.route('/api/change-status', methods=['POST'])
@@ -906,42 +854,44 @@ def change_status():
     device_id = data.get("device_id")
     vid_pid = data.get("vid_pid")
     new_type = data.get("type")
-    ttl = data.get("ttl", "3600")
+    ttl = data.get("ttl", 3600)
 
     if not vid_pid:
         return jsonify({"error": "VID:PID is required"}), 400
     if new_type not in ["P", "T"]:
         return jsonify({"error": "Invalid approval type. Must be P or T."}), 400
 
-    cmd_delete = ["sudo", "/etc/usbguard/scripts/usb-approve.sh", "--vidpid", str(vid_pid)]
-    stdout_delete, stderr_delete, rc_delete = run_command(cmd_delete)
+    ctx = get_core_context()
+    try:
+        existing = ctx.store.get_device_by_any(vid_pid)
+        if not existing:
+            return jsonify({"error": "Device not found in policy store"}), 404
 
-    if rc_delete != 0:
-        logger.error(f"Failed to remove rule for {vid_pid}: {stderr_delete}")
-        error_msg = stderr_delete if DEBUG_MODE else "Failed to remove previous authorization rules."
-        return jsonify({"success": False, "error": error_msg}), 500
+        if existing.state.startswith("approved"):
+            ctx.approver.deny(existing.fingerprint, actor="web", reason="status change")
 
-    if device_id:
-        cmd_approve = ["sudo", "/etc/usbguard/scripts/usb-approve.sh", "--device", str(device_id), "--type", new_type]
-        if new_type == "T" and ttl:
-            cmd_approve.extend(["--ttl", str(ttl)])
-
-        stdout, stderr, rc_approve = run_command(cmd_approve)
-        if rc_approve == 0:
+        if device_id:
+            device = ctx.approver.approve(
+                fingerprint=existing.fingerprint,
+                permanent=(new_type == "P"),
+                ttl=int(ttl),
+                actor="web",
+                port_bind=False,
+            )
             logger.info(f"Changed status for {vid_pid} to {new_type}")
             return jsonify({
                 "success": True,
                 "message": f"Successfully changed status of device {vid_pid} to {'Permanent' if new_type == 'P' else 'Temporary'}"
             })
         else:
-            error_msg = stderr if DEBUG_MODE else "Failed to rewrite rule. Check logs."
-            logger.error(f"Failed to change status for {vid_pid}: {stderr}")
-            return jsonify({"success": False, "error": error_msg}), 500
-    else:
-        return jsonify({
-            "success": False,
-            "error": "Device must be connected to apply status changes (rule recreation requires hardware signature scanning)."
-        }), 400
+            return jsonify({
+                "success": False,
+                "error": "Device must be connected to apply status changes (rule recreation requires hardware signature scanning)."
+            }), 400
+    except Exception as e:
+        error_msg = str(e) if DEBUG_MODE else "Failed to rewrite rule. Check logs."
+        logger.error(f"Failed to change status for {vid_pid}: {e}")
+        return jsonify({"success": False, "error": error_msg}), 500
 
 
 @app.route('/api/logs', methods=['GET'])
@@ -949,7 +899,7 @@ def get_logs():
     """Fetch the latest 50 lines from the audit log."""
     if not os.path.exists(LOG_FILE):
         return jsonify({"logs": ["No logs available yet."]})
-    
+
     try:
         with open(LOG_FILE, 'r') as file:
             lines = file.readlines()
@@ -974,18 +924,18 @@ if __name__ == '__main__':
     else:
         print("🔒 RUNNING IN PRODUCTION MODE - Errors are sanitized")
         print("✅ Detailed errors are written to /var/log/usbguard-web.log")
-    
+
     if USBGUARD_PYTHON_AVAILABLE:
         print("✅ usbguard-python: AVAILABLE (IPC mode)")
     else:
         print("⚠️  usbguard-python: NOT AVAILABLE (subprocess fallback)")
-    
+
     print("=" * 60)
     print(f"📍 Server running on: http://127.0.0.1:5000")
     print("=" * 60)
-    
+
     app.run(
-        host='127.0.0.1', 
-        port=5000, 
+        host='127.0.0.1',
+        port=5000,
         debug=DEBUG_MODE
     )

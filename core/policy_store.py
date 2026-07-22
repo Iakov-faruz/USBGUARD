@@ -1,9 +1,11 @@
 from __future__ import annotations
-import fcntl, json, shutil
+import fcntl, json, logging, shutil
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from .models import DeviceRecord, now_iso
+
+_log = logging.getLogger(__name__)
 
 class PolicyStore:
     def __init__(self, path: str, backup_dir: str, keep_backups: int = 10, lock_path: Optional[str] = None):
@@ -24,10 +26,11 @@ class PolicyStore:
             data = json.loads(self.path.read_text(encoding="utf-8"))
             if not isinstance(data, dict): raise ValueError("not dict")
             data.setdefault("version",1); data.setdefault("meta",{}); data.setdefault("devices",{}); return data
-        except Exception:
+        except Exception as e:
             corrupt = self.path.with_suffix(".corrupt")
             try: self.path.replace(corrupt)
             except Exception: pass
+            _log.critical("Policy store corrupted, moved to %s: %s", corrupt, e)
             return self._default_data()
     def _backup_unlocked(self) -> None:
         if not self.path.exists(): return
@@ -39,15 +42,16 @@ class PolicyStore:
         for old in backups[self.keep_backups:]:
             try: old.unlink()
             except Exception: pass
-    def _save_unlocked(self, data: Dict[str, Any]) -> None:
-        self._backup_unlocked()
+    def _save_unlocked(self, data: Dict[str, Any], backup: bool = True) -> None:
+        if backup:
+            self._backup_unlocked()
         tmp = self.path.with_suffix(".tmp")
         tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False, sort_keys=True), encoding="utf-8")
         tmp.chmod(0o600); tmp.replace(self.path)
     def load(self) -> Dict[str, Any]:
         with self._lock(): return self._load_unlocked()
-    def save(self, data: Dict[str, Any]) -> None:
-        with self._lock(): self._save_unlocked(data)
+    def save(self, data: Dict[str, Any], backup: bool = True) -> None:
+        with self._lock(): self._save_unlocked(data, backup=backup)
     def upsert_device(self, device: DeviceRecord) -> DeviceRecord:
         with self._lock():
             data = self._load_unlocked()
@@ -55,9 +59,7 @@ class PolicyStore:
             if existing_raw:
                 existing = DeviceRecord.from_dict(existing_raw)
                 device.first_seen = existing.first_seen or device.first_seen or now_iso()
-                # Merge flags from existing and new, preserving all flags from both
-                merged_flags = list(set(existing.flags + device.flags))
-                device.flags = sorted(merged_flags)
+                device.flags = sorted(set(existing.flags + device.flags))
                 # Preserve existing metadata that shouldn't be overwritten
                 if existing.risk_score > device.risk_score:
                     device.risk_score = existing.risk_score
@@ -68,7 +70,7 @@ class PolicyStore:
                 device.first_seen = device.first_seen or now_iso()
             device.last_seen = now_iso()
             data["devices"][device.fingerprint] = device.to_dict()
-            self._save_unlocked(data); return device
+            self._save_unlocked(data, backup=False); return device
     def get_device(self, fingerprint: str) -> Optional[DeviceRecord]:
         with self._lock():
             data = self._load_unlocked()
@@ -99,7 +101,7 @@ class PolicyStore:
                 for k,v in extra.items():
                     if hasattr(device,k): setattr(device,k,v)
             if reason: device.add_flag(reason)
-            data["devices"][fingerprint] = device.to_dict(); self._save_unlocked(data); return True
+            data["devices"][fingerprint] = device.to_dict(); self._save_unlocked(data, backup=True); return True
     def find_by_attributes(self, vid_pid: Optional[str] = None, serial: Optional[str] = None, via_port: Optional[str] = None, hash_: Optional[str] = None) -> Optional[DeviceRecord]:
         with self._lock():
             data = self._load_unlocked()
