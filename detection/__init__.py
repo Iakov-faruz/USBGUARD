@@ -1,0 +1,1 @@
+# USBGuard Protector Detection Modules

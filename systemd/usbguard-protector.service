@@ -1,0 +1,82 @@
+# =============================================================================
+# USBGuard Protector Daemon
+#
+# שירות systemd לסנכרון מדיניות USBGuard ושמירה על זיכרון זמני.
+# =============================================================================
+
+[Unit]
+Description=USBGuard Protector Daemon
+Documentation=man:usbguard(8)
+
+Requires=usbguard.service
+After=usbguard.service systemd-udevd.service
+PartOf=usbguard.service
+
+StartLimitIntervalSec=60
+StartLimitBurst=5
+ConditionPathExists=/usr/local/bin/protector
+
+[Service]
+Type=simple
+User=root
+Group=root
+
+ExecStart=/usr/local/bin/protector daemon --interval 5
+ExecReload=/bin/kill -HUP $MAINPID
+
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=10
+
+UMask=0077
+
+SyslogIdentifier=usbguard-protector
+
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PYTHONUNBUFFERED=1
+Environment=HOME=/run/usbguard-manager
+Environment=XDG_RUNTIME_DIR=/run/usbguard-manager
+
+StateDirectory=usbguard-manager
+StateDirectoryMode=0750
+
+LogsDirectory=usbguard
+LogsDirectoryMode=0750
+
+RuntimeDirectory=usbguard-manager
+RuntimeDirectoryMode=0700
+
+ReadWritePaths=/etc/usbguard
+
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+
+LockPersonality=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+
+# =============================================================================
+# הקשחות אופציונליות - להוסיף רק אחרי בדיקות
+# =============================================================================
+
+# אם השירות לא צריך TCP/UDP:
+# RestrictAddressFamilies=AF_UNIX AF_NETLINK
+# IPAddressDeny=any
+
+# SystemCallFilter=@system-service
+# SystemCallErrorNumber=EPERM
+
+# MemoryDenyWriteExecute=yes
+
+[Install]
+WantedBy=multi-user.target

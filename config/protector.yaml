@@ -1,0 +1,45 @@
+# ==============================================================================
+# USBGuard Protector - Main System Configuration
+# קובץ התצורה הראשי למנהל ה-USBGuard והמדיניות
+# ==============================================================================
+
+# הנתיב לקובץ ההרצה של USBGuard במערכת
+usbguard_binary: /usr/bin/usbguard
+
+# הגדרת נתיבי העבודה, הנתונים והלוגים של המערכת
+paths:
+  data_dir: /var/lib/usbguard-manager             # תיקיית נתונים ראשית
+  config_dir: /etc/usbguard                       # תיקיית הגדרות
+  log_dir: /var/log/usbguard                      # תיקיית לוגים
+  run_dir: /run/usbguard-manager                  # תיקיית בזמן-ריצה
+  policy_store_file: /var/lib/usbguard-manager/policy.json  # קובץ מסד הנתונים
+  backup_dir: /var/lib/usbguard-manager/backups  # תיקיית גיבויים
+  audit_file: /var/log/usbguard/audit.jsonl       # קובץ לוג אבטחה (Audit)
+  lock_file: /run/usbguard-manager/policy.lock    # קובץ נעילה
+
+# מספר קבצי הגיבוי ההיסטוריים שיישמרו בתיקיית הגיבוי
+keep_backups: 20
+
+# הגדרות שדות הזיהוי של התקני USB במערכת
+identity:
+  required:
+    - interfaces          # שדה חובה: רשימת הממשקים של ההתקן
+  recommended:
+    - hash                # זיהוי מומלץ: הַאשׁ חומרתי
+    - serial              # זיהוי מומלץ: מספר סידורי
+    - parent_hash         # זיהוי מומלץ: הַאשׁ של רכיב האב
+    - via_port            # זיהוי מומלץ: פורט החיבור
+  allow_no_hw_hash: true  # אישור התקן גם אם אינו מספק הַאשׁ חומרה
+
+# מדיניות שיוך התקנים לפורטים פיזיים
+port_policy:
+  strict: false           # האם לאכוף שיוך קשיח לפורט בלבד
+  mismatch_action: review # פעולה במקרה של אי-התאמה בפורט (review = העברה לבדיקה)
+
+# מנגנון הגנה מפני התקנים משולבים (Anti-BadUSB Layer)
+composite:
+  reject_hid_mass_storage: true  # חסימת התקן המשלב מקלדת + דיסק און קי
+  reject_hid_cdc: true           # חסימת התקן המשלב מקלדת + כרטיס רשת
+
+# הנתיב לקובץ הגדרות ספי הרגישות (thresholds.yaml)
+thresholds_file: /etc/usbguard/thresholds.yaml
